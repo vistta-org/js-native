@@ -25,16 +25,14 @@ export function exec(cmd, args = "", options = {}) {
     args = "";
   }
 
-  if (!env)
-    env =
-      platform() === "win32"
-        ? () => {
-            const ps = spawnSync(
-              "powershell",
-              [
-                "-NoProfile",
-                "-Command",
-                `
+  if (!env) {
+    if (platform() === "win32") {
+      const ps = spawnSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `
   $machine = [System.Environment]::GetEnvironmentVariables('Machine')
   $user = [System.Environment]::GetEnvironmentVariables('User')
 
@@ -50,15 +48,14 @@ export function exec(cmd, args = "", options = {}) {
 
   $result | ConvertTo-Json -Compress
         `,
-              ],
-              { encoding: "utf8" },
-            );
+        ],
+        { encoding: "utf8" },
+      );
 
-            if (ps.status !== 0) throw new Error(ps.stderr);
-
-            return { ...process.env, ...JSON.parse(ps.stdout) };
-          }
-        : { ...process.env };
+      if (ps.status !== 0) env = { ...process.env };
+      else env = { ...process.env, ...JSON.parse(ps.stdout) };
+    } else env = { ...process.env };
+  }
   options = Object.assign({ stdio: "pipe", shell: true, env }, options);
   const child = spawn(cmd, args.split(" "), /** @type {any} */ (options));
   return {

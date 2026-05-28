@@ -90,39 +90,47 @@ export async function build(config) {
   await mergeConfig(cwd, config);
 
   const iconPath = config?.icon && config?.buildDir && fs.resolve(config.buildDir, "www", config.icon);
-  try {
-    switch (config.target) {
-      case "android": {
-        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
+  switch (config.target) {
+    case "android": {
+      try {
+        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`, { cwd });
+        await patchBuildTask(cwd, config);
+        await patchAndroidManifest(cwd);
         if (fs.existsSync(iconPath)) await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
-        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
+        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd, stdio: "inherit" });
+      } catch {
+        throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
       }
-      case "ios": {
-        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
-        if (fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
-        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
-      }
-      case "desktop":
+    }
+    case "ios": {
+      if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
+      if (fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
+      return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
+    }
+    case "desktop":
+      try {
         if (fs.existsSync(iconPath)) await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
         return await tauri(`build ${DEV ? "--debug" : "--release"}`, { cwd });
-      default:
-        throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
-    }
-  } catch {
-    switch (platform()) {
-      case "win32":
-        throw new Error(
-          "Build failed. Please ensure you have the Visual C++ Build Tools installed: https://visualstudio.microsoft.com/visual-cpp-build-tools/",
-        );
-      case "darwin":
-        throw new Error("Build failed. Please ensure you have Xcode Command Line Tools installed: xcode-select --install");
-      case "linux":
-        throw new Error(
-          "Build failed. Please ensure you have the necessary build tools installed (e.g., build-essential on Debian/Ubuntu).",
-        );
-      default:
-        throw new Error("Build failed. Please ensure you have the necessary build tools installed for your platform.");
-    }
+      } catch {
+        switch (platform()) {
+          case "win32":
+            throw new Error(
+              "Build failed. Please ensure you have the Visual C++ Build Tools installed: https://visualstudio.microsoft.com/visual-cpp-build-tools/",
+            );
+          case "darwin":
+            throw new Error(
+              "Build failed. Please ensure you have Xcode Command Line Tools installed: xcode-select --install",
+            );
+          case "linux":
+            throw new Error(
+              "Build failed. Please ensure you have the necessary build tools installed (e.g., build-essential on Debian/Ubuntu).",
+            );
+          default:
+            throw new Error("Build failed. Please ensure you have the necessary build tools installed for your platform.");
+        }
+      }
+    default:
+      throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
   }
 }
 
@@ -134,6 +142,41 @@ async function copyTemplate(src, dest) {
     const destPath = fs.resolve(dest, entry);
     if (fs.isDirectory(srcPath)) await copyTemplate(srcPath, destPath);
     else if (!fs.existsSync(destPath)) await fs.copyFile(srcPath, destPath);
+  }
+}
+
+async function patchBuildTask(targetDir, config) {
+  const appId = config?.app?.id || "org.vistta.app";
+  const packagePath = appId.replace(/\./g, "/");
+  const buildTaskPath = fs.resolve(
+    targetDir,
+    "gen",
+    "android",
+    "buildSrc",
+    "src",
+    "main",
+    "java",
+    packagePath,
+    "kotlin",
+    "BuildTask.kt",
+  );
+  if (!fs.existsSync(buildTaskPath)) return;
+  let content = String(await fs.readFile(buildTaskPath, "utf8"));
+  content = content.replace(/val executable = """npm""";/g, 'val executable = """npx""";');
+  content = content.replace(/val args = listOf\("run", "--", "tauri"/g, 'val args = listOf("tauri"');
+  await fs.writeFile(buildTaskPath, content);
+}
+
+async function patchAndroidManifest(targetDir) {
+  const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
+  if (!fs.existsSync(manifestPath)) return;
+  let content = String(await fs.readFile(manifestPath, "utf8"));
+  if (!content.includes("POST_NOTIFICATIONS")) {
+    content = content.replace(
+      /<uses-permission android:name="android.permission.INTERNET" \/>/,
+      `<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />`,
+    );
+    await fs.writeFile(manifestPath, content);
   }
 }
 
@@ -156,7 +199,13 @@ async function patchMainRs(targetDir, config) {
   const mainPath = fs.resolve(targetDir, "src", "main.rs");
   if (!fs.existsSync(mainPath)) return;
   const { lib } = await getInfo(config);
-  await fs.writeFile(mainPath, String(await fs.readFile(mainPath, "utf8")).replace(/vistta_js_example/g, lib));
+  const appId = config?.app?.id || "org.vistta.app";
+  await fs.writeFile(
+    mainPath,
+    String(await fs.readFile(mainPath, "utf8"))
+      .replace(/vistta_js_example/g, lib)
+      .replace(/vistta_app_id/g, appId),
+  );
 }
 
 async function mergeConfig(targetDir, config) {
