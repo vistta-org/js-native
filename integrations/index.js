@@ -1,6 +1,7 @@
-export * as Camera from "./camera.js";
+export * as Clipboard from "./clipboard.js";
+export * as Dialog from "./dialog.js";
 export * as Filesystem from "./filesystem.js";
 export * as Haptics from "./haptics.js";
-export * as SplashScreen from "./splash-screen.js";
-export * as StatusBar from "./status-bar.js";
-export * as System from "./system.js";
+export * as Notification from "./notification.js";
+export * as OS from "./os.js";
+export * as Shell from "./shell.js";

@@ -1,4 +1,4 @@
-// Unified filesystem integration for Capacitor (app), Electron (desktop), and web.
+// Unified filesystem integration for Tauri (all platforms) and web.
 
 /**
  * Read a file.
@@ -6,24 +6,12 @@
  * @returns {Promise<{ data: string }>}
  */
 export async function readFile(options) {
-  if (window.platform === "mobile") {
-    const { Filesystem } = await import("@capacitor/filesystem");
-    return Filesystem.readFile(options);
+  if (window.platform === "server") return;
+  if (window.platform !== "browser") {
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    return { data: await readTextFile(options.path) };
   }
-
-  if (window.platform === "desktop") {
-    // Electron: could use IPC to main process; fallback to File System Access API
-    if (window.showOpenFilePicker) {
-      const [handle] = await window.showOpenFilePicker();
-      const file = await handle.getFile();
-      const text = await file.text();
-      return { data: text };
-    }
-    throw new Error("File System Access API not available in this Electron build.");
-  }
-
-  // Web fallback using File System Access API
-  if (window.showOpenFilePicker) {
+  if ("showOpenFilePicker" in window) {
     const [handle] = await window.showOpenFilePicker();
     const file = await handle.getFile();
     const text = await file.text();
@@ -38,20 +26,23 @@ export async function readFile(options) {
  * @returns {Promise<{ uri: string }>}
  */
 export async function writeFile(options) {
-  if (window.platform === "mobile") {
-    const { Filesystem } = await import("@capacitor/filesystem");
-    return Filesystem.writeFile(options);
-  }
-
-  if (window.platform === "desktop") {
-    if (window.showSaveFilePicker) {
-      const handle = await window.showSaveFilePicker({ suggestedName: options.path });
-      const writable = await handle.createWritable();
-      await writable.write(options.data);
-      await writable.close();
-      return { uri: handle.name };
+  if (window.platform === "server") return;
+  if (window.platform !== "browser") {
+    try {
+      const { writeTextFile, mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
+      const dir = options.directory
+        ? BaseDirectory[options.directory.charAt(0).toUpperCase() + options.directory.slice(1)]
+        : undefined;
+      if (options.recursive && dir !== undefined) {
+        try {
+          await mkdir({ path: options.path.split("/").slice(0, -1).join("/"), recursive: true, directory: dir });
+        } catch {}
+      }
+      await writeTextFile({ path: options.path, contents: options.data }, { directory: dir });
+      return { uri: options.path };
+    } catch {
+      /* Do Nothing */
     }
-    throw new Error("File System Access API not available in this Electron build.");
   }
 
   if (window.showSaveFilePicker) {
@@ -69,25 +60,32 @@ export async function writeFile(options) {
  * @param {{ path: string, directory?: string }} options
  */
 export async function deleteFile(options) {
-  if (window.platform === "mobile") {
-    const { Filesystem } = await import("@capacitor/filesystem");
-    return Filesystem.deleteFile(options);
+  if (window.platform === "server") return;
+  if (window.platform !== "browser") {
+    const { removeFile, BaseDirectory } = await import("@tauri-apps/plugin-fs");
+    const dir = options.directory
+      ? BaseDirectory[options.directory.charAt(0).toUpperCase() + options.directory.slice(1)]
+      : undefined;
+    await removeFile({ path: options.path, directory: dir });
+    return;
   }
-
-  // Desktop / Web: no direct File System Access API for deletion without a handle
-  throw new Error("deleteFile() is not supported on desktop/web without a file handle.");
+  throw new Error("deleteFile() requires Tauri runtime on desktop.");
 }
 
 /**
  * Create a directory.
- * @param {{ path: string, directory?: string, recursive?: boolean }} options
+ * @param {string} path
+ * @param {{ directory?: string, recursive?: boolean }} options
  */
-export async function mkdir(options) {
-  if (window.platform === "mobile") {
-    const { Filesystem } = await import("@capacitor/filesystem");
-    return Filesystem.mkdir(options);
+export async function mkdir(path, options) {
+  if (window.platform === "server") return;
+  if (window.platform !== "browser") {
+    const { mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
+    const dir = options.directory
+      ? BaseDirectory[options.directory.charAt(0).toUpperCase() + options.directory.slice(1)]
+      : undefined;
+    await mkdir(path, { recursive: options.recursive || false, baseDir: dir });
+    return;
   }
-
-  // Desktop / Web: no direct equivalent in File System Access API
-  throw new Error("mkdir() is not supported on desktop/web.");
+  throw new Error("mkdir() requires Tauri runtime on desktop.");
 }

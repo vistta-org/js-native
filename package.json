@@ -1,11 +1,12 @@
 {
   "name": "@vistta/js-runtime",
-  "version": "0.1.0",
-  "description": "Vistta.js App Runtime Bundle - includes all integrations with Capacitor and Electron support",
+  "version": "0.2.0",
+  "description": "Vistta.js App Runtime - Tauri backend for all platforms (mobile, desktop, web)",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./integrations": "./integrations/index.js"
+    "./integrations": "./integrations/index.js",
+    "./tauri": "./tauri"
   },
   "type": "module",
   "scripts": {
@@ -18,20 +19,20 @@
   "author": "Tiago Terenas Almeida",
   "license": "Apache 2.0 with Commons Clause",
   "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-haptics": "^2.0.0",
+    "@tauri-apps/plugin-notification": "^2.0.0",
+    "@tauri-apps/plugin-os": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@vistta/fs": "latest",
     "@vistta/js": "latest",
-    "@capacitor/android": "^8.3.3",
-    "@capacitor/app": "^8.1.0",
-    "@capacitor/camera": "^8.2.0",
-    "@capacitor/cli": "^8.3.3",
-    "@capacitor/core": "^8.3.3",
-    "@capacitor/filesystem": "^8.1.2",
-    "@capacitor/ios": "^8.3.3",
-    "@capacitor/haptics": "^8.0.2",
-    "@capacitor/splash-screen": "^8.0.1",
-    "@capacitor/status-bar": "^8.0.2",
-    "electron": "^42.0.1"
+    "@vistta/utils": "latest",
+    "sharp": "^0.33.0"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=22.0.0"
   }

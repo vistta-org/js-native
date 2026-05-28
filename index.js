@@ -1,66 +1,213 @@
 import fs from "@vistta/fs";
-import { default as electron } from "electron";
-import { spawn } from "node:child_process";
+import { exec, generateIcons, getInfo, platform } from "./utils";
 
-export class Capacitor {
-  static async run(config) {
-    const target = config.target;
-    const appId = config?.app?.id;
-    const appName = config?.app?.name || config?.title || "Vistta Example App";
-    const mobileScheme = config?.mobile?.scheme || "https";
-    if (!appId) throw new Error("Missing app ID in config.app.id");
-    try {
-      const baseConfig = await import(fs.resolve(process.cwd(), "capacitor.config.json"));
-      if (
-        baseConfig?.default?.appId !== appId ||
-        baseConfig?.default?.appName !== appName ||
-        baseConfig?.default?.server?.androidScheme !== mobileScheme
-      )
-        throw new Error("Capacitor config mismatch");
-    } catch {
-      await fs.writeFile(
-        fs.resolve(process.cwd(), "capacitor.config.json"),
-        JSON.stringify(
-          {
-            appId: appId,
-            appName: appName,
-            webDir: config.buildDir,
-            server: {
-              androidScheme: mobileScheme,
-            },
+const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
+const DEV = process.env.NODE_ENV === "development";
+
+/**
+ * @typedef {Object} Config
+ * @property {string} target - Target platform ("desktop", "android", "ios")
+ * @property {string} buildDir - Build output directory
+ * @property {Object} app - App settings (id, name, etc.)
+ * @property {string} app.id - App identifier (e.g., "com.example.app")
+ * @property {string} [app.name] - App display name
+ * @property {number} [app.width] - Window width
+ * @property {number} [app.height] - Window height
+ * @property {number} [app.minWidth] - Minimum window width
+ * @property {number} [app.minHeight] - Minimum window height
+ * @property {boolean} [app.center] - Center window on screen
+ * @property {boolean} [app.resizable] - Allow window resize
+ * @property {boolean} [app.fullscreen] - Start in fullscreen
+ * @property {boolean} [app.devTools] - Open DevTools on startup
+ * @property {string} [title] - Window title
+ * @property {string} [icon] - Icon path (relative to buildDir)
+ * @property {string} [backgroundColor] - Window background color (hex)
+ */
+
+/**
+ * Run the Tauri app in development mode.
+ * @param {Config} config - Configuration object
+ */
+export async function run(config) {
+  switch (config.target) {
+    case "ios":
+      throw new Error("iOS target is not supported yet.");
+    case "android":
+      try {
+        let closeCallback = null;
+        let closed = false;
+        await adb(
+          `install -r ${fs.resolve(config.buildDir, `gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`)}`,
+        );
+        await adb(`shell am start -n ${config.app.id}/.MainActivity`);
+        const interval = setInterval(async () => {
+          try {
+            const result = await adb(`shell dumpsys activity activities ${config.app.id}`);
+            if (!result.toString().includes(config.app.id)) throw new Error("App not running");
+          } catch {
+            closed = true;
+            if (closeCallback) closeCallback(0, null);
+            clearInterval(interval);
+          }
+        }, 1000); // keep process alive
+
+        return {
+          on(event, callback) {
+            if (event === "close") closeCallback = callback;
           },
-          null,
-          2,
-        ),
-      );
+          close: async () => {
+            await adb(`shell am force-stop ${config.app.id}`);
+            await adb(`shell pm uninstall ${config.app.id}`);
+          },
+          end: () =>
+            new Promise((resolve) => {
+              closeCallback = resolve;
+              if (closed) resolve();
+            }),
+        };
+      } catch {
+        throw new Error("ADB not found. Please install Android SDK Platform Tools and ensure 'adb' is in your PATH.");
+      }
+    case "desktop": {
+      const info = await getInfo(config);
+      const app = info.name + (platform() === "win32" ? ".exe" : "");
+      return exec(fs.resolve(config.buildDir, "target/debug", app), "", { shell: false });
     }
-    if (!fs.existsSync(fs.resolve(process.cwd(), target))) await Capacitor.exec(["add", target]);
-    await Capacitor.exec(["sync", target]);
-    await Capacitor.exec(["open", target]);
-  }
-
-  static exec(args, options) {
-    return new Promise((resolve, reject) => {
-      const child = spawn("npx", ["cap", ...args], { stdio: "pipe", shell: true, ...options });
-      child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`${args.join(" ")} exited with ${code}`))));
-    });
+    default:
+      throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
   }
 }
 
-export class Electron {
-  static async run(config) {
-    const args = [fs.resolve(import.meta.dirname, "./electron.js"), config.buildDir];
-    const desktopOpts = { ...config?.desktop };
-    if (!desktopOpts.title && config?.title) desktopOpts.title = config.title;
-    if (Object.keys(desktopOpts).length) args.push("--config", JSON.stringify(desktopOpts));
-    if (process.env.NODE_DEBUG === "true" || desktopOpts.devTools) args.push("--debug");
-    const child = Electron.exec(args, { stdio: "pipe" });
-    child.on("close", (code) => process.exit(code || 0));
-    process.on("SIGINT", () => !child.killed && child.kill("SIGINT"));
-    process.on("SIGTERM", () => !child.killed && child.kill("SIGTERM"));
-  }
+/**
+ * Build the Tauri app for distribution.
+ * @param {Config} config - Configuration object
+ */
+export async function build(config) {
+  const cwd = config.buildDir;
+  await copyTemplate(TEMPLATE_DIR, cwd);
+  await patchMainRs(cwd, config);
+  await patchCargoToml(cwd, config);
+  await mergeConfig(cwd, config);
 
-  static exec(args, options) {
-    return spawn(String(electron), args, options);
+  const iconPath = config?.icon && config?.buildDir && fs.resolve(config.buildDir, "www", config.icon);
+  try {
+    switch (config.target) {
+      case "android": {
+        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
+        if (fs.existsSync(iconPath)) await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
+        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
+      }
+      case "ios": {
+        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
+        if (fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
+        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
+      }
+      case "desktop":
+        if (fs.existsSync(iconPath)) await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
+        return await tauri(`build ${DEV ? "--debug" : "--release"}`, { cwd });
+      default:
+        throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
+    }
+  } catch {
+    switch (platform()) {
+      case "win32":
+        throw new Error(
+          "Build failed. Please ensure you have the Visual C++ Build Tools installed: https://visualstudio.microsoft.com/visual-cpp-build-tools/",
+        );
+      case "darwin":
+        throw new Error("Build failed. Please ensure you have Xcode Command Line Tools installed: xcode-select --install");
+      case "linux":
+        throw new Error(
+          "Build failed. Please ensure you have the necessary build tools installed (e.g., build-essential on Debian/Ubuntu).",
+        );
+      default:
+        throw new Error("Build failed. Please ensure you have the necessary build tools installed for your platform.");
+    }
   }
+}
+
+async function copyTemplate(src, dest) {
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = fs.resolve(src, entry);
+    const destPath = fs.resolve(dest, entry);
+    if (fs.isDirectory(srcPath)) await copyTemplate(srcPath, destPath);
+    else if (!fs.existsSync(destPath)) await fs.copyFile(srcPath, destPath);
+  }
+}
+
+async function patchCargoToml(targetDir, config) {
+  const cargoPath = fs.resolve(targetDir, "Cargo.toml");
+  if (!fs.existsSync(cargoPath)) return;
+  const { name, version, description, author, lib } = await getInfo(config);
+  await fs.writeFile(
+    cargoPath,
+    String(await fs.readFile(cargoPath, "utf8"))
+      .replace(/^name\s*=\s*".*"/m, `name = "${name}"`)
+      .replace(/^version\s*=\s*".*"/m, `version = "${version}"`)
+      .replace(/^description\s*=\s*".*"/m, `description = "${description}"`)
+      .replace(/^authors\s*=\s*\[.*\]/m, `authors = ["${author}"]`)
+      .replace(/^\[lib\]\s*\nname\s*=\s*".*"/m, `[lib]\nname = "${lib}"`),
+  );
+}
+
+async function patchMainRs(targetDir, config) {
+  const mainPath = fs.resolve(targetDir, "src", "main.rs");
+  if (!fs.existsSync(mainPath)) return;
+  const { lib } = await getInfo(config);
+  await fs.writeFile(mainPath, String(await fs.readFile(mainPath, "utf8")).replace(/vistta_js_example/g, lib));
+}
+
+async function mergeConfig(targetDir, config) {
+  const confPath = fs.resolve(targetDir, "tauri.conf.json");
+
+  const tauriConf = {
+    $schema: "https://schema.tauri.app/config/2",
+    productName: config?.app?.name || config?.title || "Vistta App",
+    identifier: config?.app?.id || "org.vistta.app",
+    version: "0.1.0",
+    build: {
+      beforeBuildCommand: "",
+      beforeDevCommand: "",
+      frontendDist: "www",
+    },
+    app: {
+      withGlobalTauri: true,
+      windows: [
+        {
+          title: config?.app?.title || config?.title || "Vistta App",
+          width: config?.app?.width || 1280,
+          height: config?.app?.height || 800,
+          minWidth: config?.app?.minWidth || 320,
+          minHeight: config?.app?.minHeight || 480,
+          center: config?.app?.center !== undefined ? config.app.center : true,
+          resizable: config?.app?.resizable !== undefined ? config.app.resizable : true,
+          fullscreen: config?.app?.fullscreen !== undefined ? config.app.fullscreen : false,
+          decorations: true,
+          transparent: false,
+          alwaysOnTop: false,
+        },
+      ],
+      security: { csp: null },
+    },
+    bundle: {
+      active: true,
+      targets: "all",
+      icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    },
+    plugins: { shell: { open: true } },
+  };
+
+  if (config?.backgroundColor) tauriConf.app.windows[0].backgroundColor = config.backgroundColor;
+
+  await fs.writeFile(confPath, JSON.stringify(tauriConf, null, 2));
+}
+
+function tauri(args, options) {
+  return exec("npx", `tauri ${args}`, options).end();
+}
+
+function adb(args, options) {
+  return exec("adb", args, { shell: false, ...options }).end();
 }
