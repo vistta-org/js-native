@@ -1,6 +1,6 @@
 {
   "name": "@vistta/js-runtime",
-  "version": "0.2.0",
+  "version": "0.0.0",
   "description": "Vistta.js App Runtime - Tauri backend for all platforms (mobile, desktop, web)",
   "main": "index.js",
   "exports": {
