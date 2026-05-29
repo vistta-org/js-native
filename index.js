@@ -1,4 +1,15 @@
 import fs from "@vistta/fs";
+import {
+  generateForegroundService,
+  mergeConfig,
+  patchAndroidManifest,
+  patchBuildTask,
+  patchCargoToml,
+  patchLibRs,
+  patchMainActivity,
+  patchMainRs,
+  removeForegroundService,
+} from "./patches";
 import { exec, generateIcons, getInfo, platform } from "./utils";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
@@ -19,6 +30,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {boolean} [app.resizable] - Allow window resize
  * @property {boolean} [app.fullscreen] - Start in fullscreen
  * @property {boolean} [app.devTools] - Open DevTools on startup
+ * @property {boolean} [app.background] - Keep app running in background (tray on desktop, foreground service on Android)
  * @property {string} [title] - Window title
  * @property {string} [icon] - Icon path (relative to buildDir)
  * @property {string} [backgroundColor] - Window background color (hex)
@@ -87,6 +99,7 @@ export async function build(config) {
   await copyTemplate(TEMPLATE_DIR, cwd);
   await patchMainRs(cwd, config);
   await patchCargoToml(cwd, config);
+  if (config?.app?.background) await patchLibRs(cwd);
   await mergeConfig(cwd, config);
 
   const iconPath = config?.icon && config?.buildDir && fs.resolve(config.buildDir, "www", config.icon);
@@ -95,7 +108,13 @@ export async function build(config) {
       try {
         if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`, { cwd });
         await patchBuildTask(cwd, config);
-        await patchAndroidManifest(cwd);
+        await patchAndroidManifest(cwd, config);
+        if (config?.app?.background) {
+          await generateForegroundService(cwd, config);
+          await patchMainActivity(cwd, config);
+        } else {
+          await removeForegroundService(cwd, config);
+        }
         if (fs.existsSync(iconPath)) await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
         return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd, stdio: "inherit" });
       } catch {
@@ -110,7 +129,7 @@ export async function build(config) {
     case "desktop":
       try {
         if (fs.existsSync(iconPath)) await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
-        return await tauri(`build ${DEV ? "--debug" : "--release"}`, { cwd });
+        return await tauri(`build ${DEV ? "--debug" : "--release"}`, { cwd, stdio: "inherit" });
       } catch {
         switch (platform()) {
           case "win32":
@@ -141,116 +160,8 @@ async function copyTemplate(src, dest) {
     const srcPath = fs.resolve(src, entry);
     const destPath = fs.resolve(dest, entry);
     if (fs.isDirectory(srcPath)) await copyTemplate(srcPath, destPath);
-    else if (!fs.existsSync(destPath)) await fs.copyFile(srcPath, destPath);
+    else await fs.copyFile(srcPath, destPath);
   }
-}
-
-async function patchBuildTask(targetDir, config) {
-  const appId = config?.app?.id || "org.vistta.app";
-  const packagePath = appId.replace(/\./g, "/");
-  const buildTaskPath = fs.resolve(
-    targetDir,
-    "gen",
-    "android",
-    "buildSrc",
-    "src",
-    "main",
-    "java",
-    packagePath,
-    "kotlin",
-    "BuildTask.kt",
-  );
-  if (!fs.existsSync(buildTaskPath)) return;
-  let content = String(await fs.readFile(buildTaskPath, "utf8"));
-  content = content.replace(/val executable = """npm""";/g, 'val executable = """npx""";');
-  content = content.replace(/val args = listOf\("run", "--", "tauri"/g, 'val args = listOf("tauri"');
-  await fs.writeFile(buildTaskPath, content);
-}
-
-async function patchAndroidManifest(targetDir) {
-  const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
-  if (!fs.existsSync(manifestPath)) return;
-  let content = String(await fs.readFile(manifestPath, "utf8"));
-  if (!content.includes("POST_NOTIFICATIONS")) {
-    content = content.replace(
-      /<uses-permission android:name="android.permission.INTERNET" \/>/,
-      `<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />`,
-    );
-    await fs.writeFile(manifestPath, content);
-  }
-}
-
-async function patchCargoToml(targetDir, config) {
-  const cargoPath = fs.resolve(targetDir, "Cargo.toml");
-  if (!fs.existsSync(cargoPath)) return;
-  const { name, version, description, author, lib } = await getInfo(config);
-  await fs.writeFile(
-    cargoPath,
-    String(await fs.readFile(cargoPath, "utf8"))
-      .replace(/^name\s*=\s*".*"/m, `name = "${name}"`)
-      .replace(/^version\s*=\s*".*"/m, `version = "${version}"`)
-      .replace(/^description\s*=\s*".*"/m, `description = "${description}"`)
-      .replace(/^authors\s*=\s*\[.*\]/m, `authors = ["${author}"]`)
-      .replace(/^\[lib\]\s*\nname\s*=\s*".*"/m, `[lib]\nname = "${lib}"`),
-  );
-}
-
-async function patchMainRs(targetDir, config) {
-  const mainPath = fs.resolve(targetDir, "src", "main.rs");
-  if (!fs.existsSync(mainPath)) return;
-  const { lib } = await getInfo(config);
-  const appId = config?.app?.id || "org.vistta.app";
-  await fs.writeFile(
-    mainPath,
-    String(await fs.readFile(mainPath, "utf8"))
-      .replace(/vistta_js_example/g, lib)
-      .replace(/vistta_app_id/g, appId),
-  );
-}
-
-async function mergeConfig(targetDir, config) {
-  const confPath = fs.resolve(targetDir, "tauri.conf.json");
-
-  const tauriConf = {
-    $schema: "https://schema.tauri.app/config/2",
-    productName: config?.app?.name || config?.title || "Vistta App",
-    identifier: config?.app?.id || "org.vistta.app",
-    version: "0.1.0",
-    build: {
-      beforeBuildCommand: "",
-      beforeDevCommand: "",
-      frontendDist: "www",
-    },
-    app: {
-      withGlobalTauri: true,
-      windows: [
-        {
-          title: config?.app?.title || config?.title || "Vistta App",
-          width: config?.app?.width || 1280,
-          height: config?.app?.height || 800,
-          minWidth: config?.app?.minWidth || 320,
-          minHeight: config?.app?.minHeight || 480,
-          center: config?.app?.center !== undefined ? config.app.center : true,
-          resizable: config?.app?.resizable !== undefined ? config.app.resizable : true,
-          fullscreen: config?.app?.fullscreen !== undefined ? config.app.fullscreen : false,
-          decorations: true,
-          transparent: false,
-          alwaysOnTop: false,
-        },
-      ],
-      security: { csp: null },
-    },
-    bundle: {
-      active: true,
-      targets: "all",
-      icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    },
-    plugins: { shell: { open: true } },
-  };
-
-  if (config?.backgroundColor) tauriConf.app.windows[0].backgroundColor = config.backgroundColor;
-
-  await fs.writeFile(confPath, JSON.stringify(tauriConf, null, 2));
 }
 
 function tauri(args, options) {
