@@ -5,8 +5,7 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./integrations": "./integrations/index.js",
-    "./tauri": "./tauri"
+    "./plugins": "./plugins.js"
   },
   "type": "module",
   "scripts": {
