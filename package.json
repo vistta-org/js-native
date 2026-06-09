@@ -19,18 +19,17 @@
   "license": "Apache 2.0 with Commons Clause",
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.11.2",
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-haptics": "^2.0.0",
     "@tauri-apps/plugin-notification": "^2.0.0",
-    "@tauri-apps/plugin-os": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "@vistta/fs": "latest",
     "@vistta/js": "latest",
     "@vistta/utils": "latest",
-    "sharp": "^0.33.0"
+    "sharp": "^0.34.5"
   },
   "engines": {
     "node": ">=22.0.0"
