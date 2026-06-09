@@ -4,52 +4,69 @@ import {
   mergeConfig,
   patchAndroidManifest,
   patchBuildTask,
+  patchCapabilities,
   patchCargoToml,
   patchLibRs,
   patchMainActivity,
   patchMainRs,
   removeForegroundService,
-} from "./patches";
-import { exec, generateIcons, getInfo, platform } from "./utils";
+} from "./patches/index.js";
+import { exec, generateIcons, getInfo, platform } from "./utils/index.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
 const DEV = process.env.NODE_ENV === "development";
 
 /**
  * @typedef {Object} Config
- * @property {string} target - Target platform ("desktop", "android", "ios")
- * @property {string} buildDir - Build output directory
- * @property {Object} app - App settings (id, name, etc.)
- * @property {string} app.id - App identifier (e.g., "com.example.app")
- * @property {string} [app.name] - App display name
- * @property {number} [app.width] - Window width
- * @property {number} [app.height] - Window height
- * @property {number} [app.minWidth] - Minimum window width
- * @property {number} [app.minHeight] - Minimum window height
- * @property {boolean} [app.center] - Center window on screen
- * @property {boolean} [app.resizable] - Allow window resize
- * @property {boolean} [app.fullscreen] - Start in fullscreen
- * @property {boolean} [app.devTools] - Open DevTools on startup
- * @property {boolean} [app.background] - Keep app running in background (tray on desktop, foreground service on Android)
- * @property {string} [title] - Window title
- * @property {string} [icon] - Icon path (relative to buildDir)
- * @property {string} [backgroundColor] - Window background color (hex)
+ * @property {"desktop"|"android"|"ios"} target - Target platform.
+ * @property {string} buildDir - Build output directory (the src-tauri root for this app).
+ * @property {Object} app - App settings.
+ * @property {string} app.id - App identifier (e.g., "com.example.app").
+ * @property {string} [app.name] - App display name.
+ * @property {number} [app.width] - Window width.
+ * @property {number} [app.height] - Window height.
+ * @property {number} [app.minWidth] - Minimum window width.
+ * @property {number} [app.minHeight] - Minimum window height.
+ * @property {boolean} [app.center] - Center window on screen.
+ * @property {boolean} [app.resizable] - Allow window resize.
+ * @property {boolean} [app.fullscreen] - Start in fullscreen.
+ * @property {boolean} [app.devTools] - Open DevTools on startup.
+ * @property {boolean} [app.background] - Keep running in background (tray on desktop, foreground service on Android).
+ * @property {string} [title] - Window title.
+ * @property {string} [icon] - Icon path (relative to buildDir/www).
+ * @property {string} [backgroundColor] - Window background color (hex).
+ * @property {{csp?: string|null}} [security]
+ * @property {Object} [extraTauriConfig] - Deep-merged into the generated tauri.conf.json.
+ * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
+ * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
+ * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
+ * @property {(message: string, isError: boolean) => void} [onOutput] - Receives stdout/stderr lines from `tauri`. When provided, child stdio is piped; otherwise it's inherited.
+ * @property {Object} [signing] - Platform code-signing settings; see config.js#buildSigning.
  */
 
 /**
- * Run the Tauri app in development mode.
- * @param {Config} config - Configuration object
+ * Launches an already-built app. Expects `build(config)` to have produced the
+ * platform artifact (APK for android, native binary for desktop) under
+ * `config.buildDir`. No Android Studio / emulator manager dependency: android
+ * is deployed straight to the connected device via `adb`.
+ *
+ * Returns a handle (`{on, close, end}`); callers invoke `.close()` to stop
+ * and `await handle.end()` to wait for app exit.
+ * @param {Config} config
  */
 export async function run(config) {
   switch (config.target) {
     case "ios":
       throw new Error("iOS target is not supported yet.");
-    case "android":
+    case "android": {
       try {
         let closeCallback = null;
         let closed = false;
         await adb(
-          `install -r ${fs.resolve(config.buildDir, `gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`)}`,
+          `install -r ${fs.resolve(
+            config.buildDir,
+            "gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk",
+          )}`,
         );
         await adb(`shell am start -n ${config.app.id}/.MainActivity`);
         const interval = setInterval(async () => {
@@ -61,8 +78,7 @@ export async function run(config) {
             if (closeCallback) closeCallback(0, null);
             clearInterval(interval);
           }
-        }, 1000); // keep process alive
-
+        }, 1000);
         return {
           on(event, callback) {
             if (event === "close") closeCallback = callback;
@@ -80,6 +96,7 @@ export async function run(config) {
       } catch {
         throw new Error("ADB not found. Please install Android SDK Platform Tools and ensure 'adb' is in your PATH.");
       }
+    }
     case "desktop": {
       const info = await getInfo(config);
       const app = info.name + (platform() === "win32" ? ".exe" : "");
@@ -90,84 +107,217 @@ export async function run(config) {
   }
 }
 
-/**
- * Build the Tauri app for distribution.
- * @param {Config} config - Configuration object
- */
-export async function build(config) {
-  const cwd = config.buildDir;
-  await copyTemplate(TEMPLATE_DIR, cwd);
-  await patchMainRs(cwd, config);
-  await patchCargoToml(cwd, config);
-  if (config?.app?.background) await patchLibRs(cwd);
-  await mergeConfig(cwd, config);
-
-  const iconPath = config?.icon && config?.buildDir && fs.resolve(config.buildDir, "www", config.icon);
-  switch (config.target) {
-    case "android": {
-      try {
-        if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`, { cwd });
-        await patchBuildTask(cwd, config);
-        await patchAndroidManifest(cwd, config);
-        if (config?.app?.background) {
-          await generateForegroundService(cwd, config);
-          await patchMainActivity(cwd, config);
-        } else {
-          await removeForegroundService(cwd, config);
-        }
-        if (fs.existsSync(iconPath)) await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
-        return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd, stdio: "inherit" });
-      } catch {
-        throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
-      }
-    }
-    case "ios": {
-      if (!fs.existsSync(fs.resolve(config.buildDir, "gen", config.target))) await tauri(`${config.target} init`);
-      if (fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
-      return await tauri(`${config.target} build ${DEV ? "--debug" : "--release"}`, { cwd });
-    }
-    case "desktop":
-      try {
-        if (fs.existsSync(iconPath)) await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
-        return await tauri(`build ${DEV ? "--debug" : "--release"}`, { cwd, stdio: "inherit" });
-      } catch {
-        switch (platform()) {
-          case "win32":
-            throw new Error(
-              "Build failed. Please ensure you have the Visual C++ Build Tools installed: https://visualstudio.microsoft.com/visual-cpp-build-tools/",
-            );
-          case "darwin":
-            throw new Error(
-              "Build failed. Please ensure you have Xcode Command Line Tools installed: xcode-select --install",
-            );
-          case "linux":
-            throw new Error(
-              "Build failed. Please ensure you have the necessary build tools installed (e.g., build-essential on Debian/Ubuntu).",
-            );
-          default:
-            throw new Error("Build failed. Please ensure you have the necessary build tools installed for your platform.");
-        }
-      }
-    default:
-      throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
-  }
-}
-
-async function copyTemplate(src, dest) {
-  await fs.mkdir(dest, { recursive: true });
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = fs.resolve(src, entry);
-    const destPath = fs.resolve(dest, entry);
-    if (fs.isDirectory(srcPath)) await copyTemplate(srcPath, destPath);
-    else await fs.copyFile(srcPath, destPath);
-  }
-}
-
-function tauri(args, options) {
-  return exec("npx", `tauri ${args}`, options).end();
-}
-
 function adb(args, options) {
   return exec("adb", args, { shell: false, ...options }).end();
 }
+
+/**
+ * Build the Tauri app for distribution. Awaits completion before returning so
+ * callers can safely deploy/launch the produced artifact immediately after.
+ * Returns `{ type, paths }` where `type` is the build variant that was
+ * produced (`"release"` or `"debug"`) and `paths` is the list of absolute paths
+ * to produced artifacts (APK/AAB for android, .app/.ipa for ios, native binary
+ * for desktop). Parses the tauri child's stdout for `Finished ... at:`
+ * markers and falls back to well-known default paths when no markers are
+ * emitted.
+ * @param {Config} config
+ * @returns {Promise<{ type: "release" | "debug", paths: string[] }>}
+ */
+export async function build(config) {
+  await applyTemplate(config);
+
+  const cwd = config.buildDir;
+  const iconPath = resolveIconPath(config);
+  const type = /** @type {"release" | "debug"} */ (DEV ? "debug" : "release");
+  const debug = DEV ? "--debug" : "";
+
+  // Always pipe so we can parse lines. Forward chunks to caller's onOutput too,
+  // if they supplied one. The artifacts array is per-call so concurrent builds
+  // (rare, but possible from the CLI's `app` target) don't cross-contaminate.
+  const artifacts = [];
+  const collectLine = (line) => {
+    const m = line.match(/Finished\s+\d+\s+\S+\s+at:\s*(.+)$/i);
+    if (m) artifacts.push(m[1].trim());
+  };
+  const onLine = (msg, isError) => {
+    // Normalise CRLF and split into lines, then feed to both the consumer
+    // (if any) and our parser.
+    for (const line of String(msg).replace(/\r\n/g, "\n").split("\n")) {
+      if (!line) continue;
+      collectLine(line);
+      if (config.onOutput) config.onOutput(line + "\n", isError);
+    }
+  };
+
+  switch (config.target) {
+    case "android": {
+      if (!fs.existsSync(fs.resolve(cwd, "gen", "android"))) await tauri("android init", { cwd, onLine });
+      await patchBuildTask(cwd, config);
+      await patchAndroidManifest(cwd, config);
+      if (config?.app?.background) {
+        await generateForegroundService(cwd, config);
+        await patchMainActivity(cwd, config);
+      } else {
+        await removeForegroundService(cwd, config);
+      }
+      if (iconPath && fs.existsSync(iconPath))
+        await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
+      try {
+        await tauri(`android build ${debug}`, { cwd, onLine });
+      } catch {
+        throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
+      }
+      if (artifacts.length === 0) artifacts.push(...defaultAndroidArtifacts(cwd, debug));
+      return { type, paths: artifacts };
+    }
+    case "ios": {
+      if (!fs.existsSync(fs.resolve(cwd, "gen", "ios"))) await tauri("ios init", { cwd, onLine });
+      if (iconPath && fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
+      await tauri(`ios build ${debug}`, { cwd, onLine });
+      if (artifacts.length === 0) artifacts.push(...defaultIosArtifacts(cwd));
+      return { type, paths: artifacts };
+    }
+    case "desktop": {
+      // Icon generation runs outside the try block so a bad source icon doesn't
+      // get reported as a missing toolchain.
+      if (iconPath && fs.existsSync(iconPath))
+        await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
+      try {
+        await tauri(`build ${debug}`, { cwd, onLine });
+      } catch {
+        throw new Error(desktopBuildHint());
+      }
+      // Desktop doesn't emit `Finished ... at:` markers; the binary location
+      // is deterministic. Look in release/ first, then debug/.
+      artifacts.push(...(await defaultDesktopArtifacts(cwd, debug)));
+      return { type, paths: artifacts };
+    }
+    default:
+      throw new Error(`Unsupported target "${config.target}". Supported: desktop, android, ios.`);
+  }
+}
+
+function defaultAndroidArtifacts(cwd, debug) {
+  const buildType = debug ? "debug" : "release";
+  const suffix = debug ? "debug" : "release-unsigned";
+  return [
+    fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-${suffix}.apk`),
+    fs.resolve(
+      cwd,
+      `gen/android/app/build/outputs/bundle/universal${buildType === "debug" ? "Debug" : "Release"}/app-universal-${buildType === "debug" ? "debug" : "release"}.aab`,
+    ),
+  ];
+}
+
+function defaultIosArtifacts(cwd) {
+  return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
+}
+
+async function defaultDesktopArtifacts(cwd, debug) {
+  const info = await getInfo({});
+  const exe = info.name + (platform() === "win32" ? ".exe" : "");
+  const release = fs.resolve(cwd, "target/release", exe);
+  const dbg = fs.resolve(cwd, "target/debug", exe);
+  if (fs.existsSync(release)) return [release];
+  if (fs.existsSync(dbg)) return [dbg];
+  return [debug ? dbg : release];
+}
+
+/**
+ * Derives a versioned destination filename for an artifact produced by
+ * `build()`. Naming convention: `<appName>-<version>[-<type>]<.ext>`. The
+ * type segment (release|debug) is included for Android APKs and desktop
+ * binaries; AABs and iOS `.ipa`/`.app` bundles omit it (single-variant per
+ * build). The name is sanitised for filesystem safety (spaces preserved,
+ * path separators and reserved characters stripped).
+ *
+ * @param {object} args
+ * @param {string} args.appName
+ * @param {string} [args.version]
+ * @param {"release" | "debug"} args.type
+ * @param {string} args.sourcePath - The original artifact path (used to pick the right extension).
+ * @returns {string}
+ */
+export function artifactName({ appName, version, type, sourcePath }) {
+  const ext = fs.extname(sourcePath);
+  const safe = (s) =>
+    String(s || "")
+      .replace(/[\s\\/:*?"<>|]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .trim();
+  const baseName = safe(appName) || "app";
+  const ver = version ? `-${safe(version)}` : "";
+  const includeType = /^(apk|exe)$/i.test(ext);
+  const typeSeg = includeType ? `-${type}` : "";
+  return `${baseName}${ver}${typeSeg}${ext}`;
+}
+
+/**
+ * Copies the Rust template into buildDir and applies all generators/patches.
+ * Generated files (Cargo.toml, lib.rs, main.rs, tauri.conf.json, capabilities/default.json)
+ * are always overwritten — consumers customise via the config object, not by editing files.
+ */
+async function applyTemplate(config) {
+  const cwd = config.buildDir;
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.cp(TEMPLATE_DIR, cwd, { recursive: true });
+  await patchMainRs(cwd, config);
+  await patchLibRs(cwd, config);
+  await patchCargoToml(cwd, config);
+  await mergeConfig(cwd, config);
+  await patchCapabilities(cwd, config);
+}
+
+function resolveIconPath(config) {
+  if (!config?.icon || !config?.buildDir) return null;
+  return fs.resolve(config.buildDir, "www", config.icon);
+}
+
+function desktopBuildHint() {
+  switch (platform()) {
+    case "win32":
+      return "Build failed. Please ensure you have the Visual C++ Build Tools installed: https://visualstudio.microsoft.com/visual-cpp-build-tools/";
+    case "darwin":
+      return "Build failed. Please ensure you have Xcode Command Line Tools installed: xcode-select --install";
+    case "linux":
+      return "Build failed. Please ensure you have the necessary build tools installed (e.g., build-essential on Debian/Ubuntu).";
+    default:
+      return "Build failed. Please ensure you have the necessary build tools installed for your platform.";
+  }
+}
+
+/**
+ * Spawns `npx tauri <args>` and waits for completion.
+ *
+ * Three modes:
+ *  - `onLine` set: pipe stdio, split into lines, dispatch to onLine. Raw
+ *    chunks are also written to `process.stdout` so the user sees Cargo's
+ *    progress bars in real-time (without this, piping buffers and the build
+ *    appears to hang for 5-15 min on the first compile).
+ *  - `onOutput` set: legacy chunked interface. Same tee-to-stdout treatment.
+ *  - neither: stdio inherited (writes straight to the parent TTY). No parsing,
+ *    no buffering — the original fast path.
+ *
+ * Rejects on non-zero exit.
+ */
+function tauri(args, options = {}) {
+  const { onLine, onOutput, cwd } = options;
+  const handler = onLine || onOutput;
+  if (!handler) {
+    return exec("npx", `tauri ${args}`, { cwd, stdio: "inherit" }).end();
+  }
+  // Wrap the user callback so we can both (a) dispatch to it and (b) mirror
+  // raw chunks to the parent's stdout. This is what restores the streaming
+  // progress behaviour the user had before we introduced line-buffered parsing.
+  const wrapped = (msg, isError) => {
+    if (process.stdout?.writable) process.stdout.write(msg);
+    handler(msg, isError);
+  };
+  return exec("npx", `tauri ${args}`, { cwd, stdio: "pipe", onOutput: wrapped }).end();
+}
+
+// Namespace alias matching README usage: `import { Tauri } from "@vistta/js-runtime"`.
+export const Tauri = { run, build };
+
+// Re-exports for advanced use.
+export { getInfo, platform };

@@ -5,9 +5,9 @@ Unified runtime for building cross-platform applications (mobile, desktop, web) 
 ## Features
 
 - **Single codebase** for all platforms: Android, iOS, macOS, Windows, Linux, and Web
-- **Native integrations**: Camera, Filesystem, Haptics, Status Bar, Notifications, Shell, and more
-- **Small bundle size**: ~10MB vs ~150MB for Electron
-- **JS-only for app developers**: Rust backend is included in the package
+- **JS-only for app developers** — no Rust required; the runtime owns `src-tauri/`
+- **Built-in integrations**: Clipboard, Dialog, Filesystem, Haptics, Notification, Shell
+- **Smaller bundle than Electron** (Tauri ships a webview, not a full browser)
 
 ## Installation
 
@@ -20,145 +20,206 @@ npm install @vistta/js-runtime
 ```javascript
 import { Tauri } from "@vistta/js-runtime";
 
-// Initialize and run the app
+// Launches `tauri dev` for desktop, `tauri android dev` for Android.
 await Tauri.run({
+  target: "desktop", // required: "desktop" | "android" | "ios"
+  buildDir: "./build", // src-tauri root for this app
   app: {
     id: "com.example.myapp",
     name: "My App",
   },
-  buildDir: "./build",
   title: "My App",
   backgroundColor: "#ffffff",
 });
+```
+
+`run` and `build` are also available as named exports:
+
+```javascript
+import { run, build } from "@vistta/js-runtime";
 ```
 
 ## API
 
 ### `Tauri.run(config)`
 
-Launches the Tauri app in development mode.
+Generates / refreshes `src-tauri/` files from the config, then runs the platform-specific
+Tauri dev loop:
+
+- `target: "desktop"` → `npx tauri dev`
+- `target: "android"` → `npx tauri android dev`
+- `target: "ios"` → not yet supported
 
 ```javascript
 await Tauri.run({
+  target: "desktop",
+  buildDir: "./build",
   app: {
-    id: "com.example.app", // Required: App identifier
-    name: "My App", // Display name
-    width: 1280, // Window width
-    height: 800, // Window height
-    minWidth: 320, // Minimum window width
-    minHeight: 480, // Minimum window height
-    center: true, // Center on screen
-    resizable: true, // Allow resize
-    fullscreen: false, // Start in fullscreen
-    devTools: false, // Open DevTools on start
+    id: "com.example.app",
+    name: "My App",
+    width: 1280,
+    height: 800,
+    minWidth: 320,
+    minHeight: 480,
+    center: true,
+    resizable: true,
+    fullscreen: false,
+    devTools: false,
+    background: false, // tray on desktop / foreground service on Android
   },
-  buildDir: "./build", // Web build output directory
-  title: "My App", // Window title
-  icon: "icon.png", // Icon path (relative to buildDir)
-  backgroundColor: "#ffffff", // Window background color
+  title: "My App",
+  icon: "icon.png", // relative to buildDir/www
+  backgroundColor: "#ffffff",
 });
 ```
 
 ### `Tauri.build(config)`
 
 Builds the Tauri app for distribution (Android APK, Windows installer, etc.).
+Same config shape as `run`. The `target` field is required.
 
 ```javascript
 await Tauri.build({
-  app: { id: "com.example.app", name: "My App" },
+  target: "android",
   buildDir: "./build",
+  app: { id: "com.example.app", name: "My App" },
 });
 ```
 
-## Integrations
+### Extension points
 
-Import integrations from `@vistta/js-runtime/integrations`:
-
-### Camera
+Power-user escape hatches so you can extend the generated `src-tauri/` without
+forking the runtime. All are optional and deep-merged into the defaults.
 
 ```javascript
-import { Camera } from "@vistta/js-runtime/integrations";
+await Tauri.build({
+  target: "desktop",
+  buildDir: "./build",
+  app: { id: "com.example.app" },
 
-// Take a photo
-const photo = await Camera.takePhoto();
+  // Deep-merged into the generated tauri.conf.json.
+  extraTauriConfig: {
+    app: { windows: [{ decorations: false }] },
+    plugins: { shell: { open: false } },
+  },
 
-// Pick from gallery
-const image = await Camera.pickImage();
+  // Extra Cargo crates appended to [dependencies] (string or object spec).
+  extraCargoDependencies: {
+    rusqlite: { version: "0.31", features: ["bundled"] },
+    chrono: "0.4",
+  },
+
+  // Extra permission entries merged into capabilities/default.json.
+  extraCapabilities: [
+    "core:webview:allow-print",
+    { identifier: "shell:allow-execute", allow: [{ name: "git", cmd: "git", args: true }] },
+  ],
+
+  // Override the default CSP (defaults to null = disabled).
+  security: { csp: "default-src 'self'" },
+
+  // Platform code-signing — credentials should come from env vars, not config.
+  signing: {
+    android: { keystorePath: "./release.keystore", minSdkVersion: 24, versionCode: 12 },
+    windows: { certificateThumbprint: "...", digestAlgorithm: "sha256", timestampUrl: "http://timestamp.digicert.com" },
+    macos: {
+      signingIdentity: "Developer ID Application: ...",
+      providerShortName: "TEAMID",
+      entitlements: "./entitlements.plist",
+    },
+  },
+
+  // Stream tauri stdout/stderr line-by-line (replaces inherited stdio).
+  onOutput: (msg, isError) => console[isError ? "error" : "log"](msg),
+
+  // Dev-only: pass through a custom dev server URL (otherwise frontendDist is used).
+  devUrl: "http://localhost:5173",
+});
 ```
+
+> `extraTauriConfig` is deep-merged into the generated `tauri.conf.json`. Object
+> properties merge recursively; **arrays from `extraTauriConfig` replace** the
+> defaults rather than concatenating, so callers can fully control list-valued
+> fields like `app.windows`.
+
+#### Return value
+
+`run` and `build` return different shapes:
+
+- `run` returns an `exec` handle of `{ close, on, end }`. `run` is long-lived — keep the handle and call `handle.close()` to stop the dev process.
+- `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, the native binary for desktop). The runtime parses tauri output for `Finished ... at:` markers and falls back to well-known default paths if no markers are emitted. The promise rejects with an `Error` on non-zero exit.
+
+The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to the build output directory using a versioned name derived from `artifactName()`:
+
+```javascript
+import { build, artifactName } from "@vistta/js-runtime";
+
+const { type, paths } = await build({ target: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
+for (const sourcePath of paths) {
+  const name = artifactName({ appName: "My App", version: "1.0.0", type, sourcePath });
+  // → "My-App-1.0.0.apk" / "My-App-1.0.0.aab" (android)
+  // → "My-App-1.0.0-release.exe" (desktop)
+  // → "My-App-1.0.0.app" / ".ipa" (ios)
+}
+```
+
+#### `artifactName({ appName, version, type, sourcePath })`
+
+Derives a versioned destination filename for an artifact produced by `build()`. The naming convention is:
+
+- Android APK: `<App-Name>-<version>-<type>.apk`
+- Android AAB: `<App-Name>-<version>.aab`
+- Desktop binary: `<App-Name>-<version>-<type><.exe?>` (where the type segment is `-release` or `-debug`)
+- iOS `.app`/`.ipa`: `<App-Name>-<version><.ext>`
+
+Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName` and `version` are collapsed to a single `-` so the filename is safe on Windows, macOS, and Linux.
+
+## Integrations
+
+Import plugin namespaces from `@vistta/js-runtime/plugins`:
+
+```javascript
+import { Clipboard, Dialog, Filesystem, Haptics, Notification, Shell } from "@vistta/js-runtime/plugins";
+```
+
+### Notifications
+
+On Android 13+, the runtime permission **must** be requested before posting.
+Use the bundled helper:
+
+```javascript
+import { Notification, ensureNotificationPermission } from "@vistta/js-runtime/plugins";
+
+if (await ensureNotificationPermission()) {
+  await Notification.sendNotification({ title: "Hello", body: "From Vistta" });
+}
+```
+
+The runtime auto-generates a monochrome `ic_stat_notification` drawable into
+`res/drawable-*` so notifications render correctly on Android 5+. The full-colour
+launcher icon will not display in the status bar.
 
 ### Filesystem
 
 ```javascript
-import { Filesystem } from "@vistta/js-runtime/integrations";
-
-// Read file
-const { data } = await Filesystem.readFile({ path: "test.txt" });
-
-// Write file
+import { Filesystem } from "@vistta/js-runtime/plugins";
 await Filesystem.writeFile({ path: "test.txt", data: "Hello" });
+const { data } = await Filesystem.readFile({ path: "test.txt" });
 ```
 
 ### Haptics
 
 ```javascript
-import { Haptics } from "@vistta/js-runtime/integrations";
-
-// Impact feedback
-await Haptics.impact({ style: "medium" });
-
-// Notification feedback
-await Haptics.notification({ type: "success" });
-
-// Vibrate
-await Haptics.vibrate();
+import { Haptics } from "@vistta/js-runtime/plugins";
+await Haptics.impactFeedback({ style: "medium" });
+await Haptics.vibrate(100);
 ```
 
-### StatusBar
+### Clipboard / Dialog / Shell
 
-```javascript
-import { StatusBar } from "@vistta/js-runtime/integrations";
-
-await StatusBar.setStyle({ style: "dark" });
-await StatusBar.setBackgroundColor({ color: "#ff0000" });
-await StatusBar.hide();
-await StatusBar.show();
-```
-
-### System
-
-```javascript
-import { System } from "@vistta/js-runtime/integrations";
-
-// Listen for app state changes
-const cleanup = await System.onStateChange(({ isActive }) => {
-  console.log("App is", isActive ? "active" : "inactive");
-});
-
-// Get app info
-const info = await System.getInfo();
-console.log(info.name, info.version);
-
-// Listen for back button (Android)
-await System.onBackButton(({ canGoBack }) => {
-  if (canGoBack) history.back();
-});
-
-// Exit app
-await System.exit();
-```
-
-### SplashScreen
-
-```javascript
-import { SplashScreen } from "@vistta/js-runtime/integrations";
-
-await SplashScreen.show({ autoHide: true });
-await SplashScreen.hide({ fadeOutDuration: 300 });
-```
+Re-exports of the matching `@tauri-apps/plugin-*` packages — see their docs for the full API.
 
 ## Platform Detection
-
-In your app code, detect Tauri runtime:
 
 ```javascript
 if (window.__TAURI__) {
@@ -170,62 +231,41 @@ if (window.__TAURI__) {
 
 ## Running on Android
 
-1. Ensure Android SDK is installed (`ANDROID_HOME` environment variable)
-2. Run development:
-   ```bash
-   npx tauri android dev
-   ```
-3. Build APK:
-   ```bash
-   npx tauri android build
-   ```
+1. Install the Android SDK and ensure `ANDROID_HOME` is set.
+2. Use `Tauri.run({ target: "android", ... })` — invokes `tauri android dev` under the hood.
+3. Build an APK with `Tauri.build({ target: "android", ... })`.
 
 ## Running on iOS (macOS only)
 
-1. Ensure Xcode is installed
-2. Run development:
-   ```bash
-   npx tauri ios dev
-   ```
-3. Build:
-   ```bash
-   npx tauri ios build
-   ```
-
-## Running on Desktop
-
-```bash
-# Development
-npx tauri dev
-
-# Build for distribution
-npx tauri build
-```
+Not yet supported via `Tauri.run` / `Tauri.build`. Use `npx tauri ios dev` directly inside
+`buildDir` after running a desktop build at least once to generate `src-tauri/`.
 
 ## How It Works
 
-1. `Tauri.run()` copies the `tauri/` template folder to `src-tauri/` in the user's project
-2. It merges your config into `tauri.conf.json`
-3. Runs `npx tauri dev` which:
-   - Compiles the Rust backend
-   - Starts the web dev server
-   - Launches the native window
+1. `applyTemplate()` copies `template/` → `buildDir/`.
+2. `patchMainRs`, `patchLibRs`, `patchCargoToml` regenerate the Rust entry points and
+   plugin dependencies from `plugins.config.js` (single source of truth).
+3. `mergeConfig` writes `tauri.conf.json` from the JS config + `extraTauriConfig`.
+4. `patchCapabilities` merges `extraCapabilities` into `capabilities/default.json`.
+5. Android-only: `patchAndroidManifest`, `patchBuildTask`, and (if `app.background`)
+   `generateForegroundService` + `patchMainActivity`.
+6. `npx tauri (android) dev|build` runs.
 
-The user **never writes Rust code** — the template handles all native functionality.
+All generated files are owned by the runtime — customise via the config object, not by
+editing files in `buildDir`.
 
 ## Tauri Plugins Used
 
-| Plugin                            | Purpose                    |
-| --------------------------------- | -------------------------- |
-| `@tauri-apps/plugin-camera`       | Camera access              |
-| `@tauri-apps/plugin-dialog`       | Native dialogs             |
-| `@tauri-apps/plugin-fs`           | File system access         |
-| `@tauri-apps/plugin-haptics`      | Haptic feedback            |
-| `@tauri-apps/plugin-notification` | System notifications       |
-| `@tauri-apps/plugin-os`           | OS information             |
-| `@tauri-apps/plugin-shell`        | Open URLs, spawn processes |
-| `@tauri-apps/plugin-statusbar`    | Status bar control         |
-| `@tauri-apps/plugin-app`          | App lifecycle events       |
+See `plugins.config.js` for the canonical list. As of writing:
+
+| Plugin                           | Purpose                    |
+| -------------------------------- | -------------------------- |
+| `tauri-plugin-clipboard-manager` | Clipboard access           |
+| `tauri-plugin-dialog`            | Native dialogs             |
+| `tauri-plugin-fs`                | File system access         |
+| `tauri-plugin-haptics`           | Haptic feedback            |
+| `tauri-plugin-notification`      | System notifications       |
+| `tauri-plugin-shell`             | Open URLs, spawn processes |
 
 ## License
 

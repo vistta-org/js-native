@@ -1,5 +1,6 @@
 import fs from "@vistta/fs";
 import sharp from "sharp";
+import { writeIfChanged } from "./write-if-changed.js";
 
 /**
  * @typedef {Object} PlatformIconConfig
@@ -42,14 +43,16 @@ export async function generateIcons({ target, buildDir, sourceIcon }) {
 async function generateAndroidIcons(source, buildDir) {
   const resDir = fs.resolve(buildDir, "gen", "android", "app", "src", "main", "res");
 
-  // Also create the icons/ folder for Tauri (needed for cargo build)
+  // icons/ folder for Tauri (referenced by Cargo bundle config and the
+  // notification plugin's iconPath).
   const iconsDir = fs.resolve(buildDir, "icons");
   await fs.mkdir(iconsDir, { recursive: true });
-  await sharp(source).resize(32, 32).png().toFile(fs.resolve(iconsDir, "32x32.png"));
-  await sharp(source).resize(128, 128).png().toFile(fs.resolve(iconsDir, "128x128.png"));
-  await sharp(source).resize(256, 256).png().toFile(fs.resolve(iconsDir, "128x128@2x.png"));
+  await writeImage(sharp(source).resize(32, 32).png(), fs.resolve(iconsDir, "32x32.png"));
+  await writeImage(sharp(source).resize(128, 128).png(), fs.resolve(iconsDir, "128x128.png"));
+  await writeImage(sharp(source).resize(256, 256).png(), fs.resolve(iconsDir, "128x128@2x.png"));
+  await writeNotificationIcon(source, iconsDir);
 
-  // Android mipmap densities
+  // Legacy launcher (pre-Android 8) — full square bitmap.
   const densities = [
     { name: "mipmap-mdpi", size: 48 },
     { name: "mipmap-hdpi", size: 72 },
@@ -57,11 +60,75 @@ async function generateAndroidIcons(source, buildDir) {
     { name: "mipmap-xxhdpi", size: 144 },
     { name: "mipmap-xxxhdpi", size: 192 },
   ];
-
   for (const { name, size: px } of densities) {
     const dir = fs.resolve(resDir, name);
     await fs.mkdir(dir, { recursive: true });
-    await sharp(source).resize(px, px).png().toFile(fs.resolve(dir, "ic_launcher.png"));
+    await writeImage(sharp(source).resize(px, px).png(), fs.resolve(dir, "ic_launcher.png"));
+    await writeImage(sharp(source).resize(px, px).png(), fs.resolve(dir, "ic_launcher_round.png"));
+  }
+
+  // Adaptive launcher (Android 8+) — foreground bitmap is 108dp, the inner 72dp
+  // is the safe zone (the launcher applies a mask + shadow + offset). We draw
+  // the source within the safe area centred on a transparent canvas.
+  const fgDensities = [
+    { name: "mipmap-mdpi", outer: 108, safe: 72 },
+    { name: "mipmap-hdpi", outer: 162, safe: 108 },
+    { name: "mipmap-xhdpi", outer: 216, safe: 144 },
+    { name: "mipmap-xxhdpi", outer: 324, safe: 216 },
+    { name: "mipmap-xxxhdpi", outer: 432, safe: 288 },
+  ];
+  for (const { name, outer, safe } of fgDensities) {
+    const dir = fs.resolve(resDir, name);
+    await fs.mkdir(dir, { recursive: true });
+    const inner = await sharp(source)
+      .resize(safe, safe, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .ensureAlpha()
+      .png()
+      .toBuffer();
+    const padded = await sharp({
+      create: { width: outer, height: outer, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([{ input: inner, top: Math.floor((outer - safe) / 2), left: Math.floor((outer - safe) / 2) }])
+      .png()
+      .toBuffer();
+    await writeIfChanged(fs.resolve(dir, "ic_launcher_foreground.png"), padded);
+  }
+
+  // Adaptive icon XML + background colour resource.
+  const anyDpiDir = fs.resolve(resDir, "mipmap-anydpi-v26");
+  await fs.mkdir(anyDpiDir, { recursive: true });
+  const adaptiveXml = `<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
+`;
+  await writeIfChanged(fs.resolve(anyDpiDir, "ic_launcher.xml"), adaptiveXml);
+  await writeIfChanged(fs.resolve(anyDpiDir, "ic_launcher_round.xml"), adaptiveXml);
+
+  const valuesDir = fs.resolve(resDir, "values");
+  await fs.mkdir(valuesDir, { recursive: true });
+  const colorsPath = fs.resolve(valuesDir, "ic_launcher_background.xml");
+  const colorsXml = `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
+`;
+  await writeIfChanged(colorsPath, colorsXml);
+
+  // Notification status-bar icons (monochrome silhouette per Android design guidelines).
+  // The plugin and the foreground service both reference R.drawable.ic_stat_notification.
+  const statDensities = [
+    { name: "drawable-mdpi", size: 24 },
+    { name: "drawable-hdpi", size: 36 },
+    { name: "drawable-xhdpi", size: 48 },
+    { name: "drawable-xxhdpi", size: 72 },
+    { name: "drawable-xxxhdpi", size: 96 },
+  ];
+  for (const { name, size: px } of statDensities) {
+    const dir = fs.resolve(resDir, name);
+    await fs.mkdir(dir, { recursive: true });
+    await writeImage(silhouette(source, px), fs.resolve(dir, "ic_stat_notification.png"));
   }
 }
 
@@ -73,21 +140,22 @@ async function generateAndroidIcons(source, buildDir) {
 async function generateDesktopIcons(source, buildDir) {
   const iconsDir = fs.resolve(buildDir, "icons");
   // Standard desktop icons
-  await sharp(source).resize(32, 32).png().toFile(fs.resolve(iconsDir, "32x32.png"));
-  await sharp(source).resize(128, 128).png().toFile(fs.resolve(iconsDir, "128x128.png"));
-  await sharp(source).resize(256, 256).png().toFile(fs.resolve(iconsDir, "128x128@2x.png"));
+  await writeImage(sharp(source).resize(32, 32).png(), fs.resolve(iconsDir, "32x32.png"));
+  await writeImage(sharp(source).resize(128, 128).png(), fs.resolve(iconsDir, "128x128.png"));
+  await writeImage(sharp(source).resize(256, 256).png(), fs.resolve(iconsDir, "128x128@2x.png"));
+  await writeNotificationIcon(source, iconsDir);
 
   // Generate ICO (Windows) - multiple sizes embedded
   const icoSizes = [16, 32, 48, 256];
   const icoBuffers = await Promise.all(icoSizes.map((s) => sharp(source).resize(s, s).png().toBuffer()));
   const icoBuffer = await createIco(icoBuffers, icoSizes);
-  await fs.writeFile(fs.resolve(iconsDir, "icon.ico"), icoBuffer);
+  await writeIfChanged(fs.resolve(iconsDir, "icon.ico"), icoBuffer);
 
   // ICNS (macOS)
   const icns128 = await sharp(source).resize(128, 128).png().toBuffer();
   const icns256 = await sharp(source).resize(256, 256).png().toBuffer();
   const icnsBuffer = await createIcns(icns128, icns256);
-  await fs.writeFile(fs.resolve(iconsDir, "icon.icns"), icnsBuffer);
+  await writeIfChanged(fs.resolve(iconsDir, "icon.icns"), icnsBuffer);
 }
 
 /**
@@ -100,11 +168,51 @@ async function generateIOSIcons(source, buildDir) {
   const iosSizes = [20, 29, 40, 58, 60, 76, 80, 87, 120, 152, 167, 180, 1024];
 
   for (const size of iosSizes) {
-    await sharp(source)
-      .resize(size, size)
-      .png()
-      .toFile(fs.resolve(iconsDir, `${size}x${size}.png`));
+    await writeImage(sharp(source).resize(size, size).png(), fs.resolve(iconsDir, `${size}x${size}.png`));
   }
+  await writeNotificationIcon(source, iconsDir);
+}
+
+/** Buffers a sharp pipeline and writes only when the output differs from disk. */
+async function writeImage(pipeline, path) {
+  const buf = await pipeline.toBuffer();
+  await writeIfChanged(path, buf);
+}
+
+/**
+ * Writes the cross-platform notification icon used by tauri.conf.json
+ * `plugins.notification.iconPath`. Kept full-colour for desktop; on Android
+ * the silhouette `ic_stat_notification` in res/drawable-* takes precedence.
+ * @param {Buffer} source
+ * @param {string} iconsDir
+ */
+async function writeNotificationIcon(source, iconsDir) {
+  await writeImage(sharp(source).resize(96, 96).png(), fs.resolve(iconsDir, "notification.png"));
+}
+
+/**
+ * Produces a white silhouette of the source on a transparent background, at the
+ * requested square size. Pixels with alpha > 0 become white; alpha is preserved.
+ * Required for Android status-bar icons (Android 5+ ignores colour).
+ * @param {Buffer} source
+ * @param {number} size
+ */
+function silhouette(source, size) {
+  return (
+    sharp(source)
+      .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .ensureAlpha()
+      // Recolour all opaque pixels to white while preserving alpha.
+      .composite([
+        {
+          input: {
+            create: { width: size, height: size, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
+          },
+          blend: "in",
+        },
+      ])
+      .png()
+  );
 }
 
 /**
