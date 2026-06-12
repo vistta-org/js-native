@@ -1,5 +1,5 @@
 import fs from "@vistta/fs";
-import { writeIfChanged } from "../utils/index.js";
+import { devSuffix, writeIfChanged } from "../utils/index.js";
 
 /**
  * Writes `tauri.conf.json` by deep-merging the consumer config and any `extraTauriConfig`
@@ -11,11 +11,17 @@ import { writeIfChanged } from "../utils/index.js";
  */
 export async function mergeConfig(targetDir, config) {
   const confPath = fs.resolve(targetDir, "tauri.conf.json");
+  const appId = config?.app?.id || "org.vistta.app";
+  const appName = config?.app?.name || config?.title || "Vistta App";
+  // The shared devSuffix() helper returns " [DEV]" in development, "" in
+  // release. Read it once into a different-named local so we don't shadow
+  // the imported function in this scope.
+  const suffix = devSuffix();
 
   const generated = {
     $schema: "https://schema.tauri.app/config/2",
-    productName: config?.app?.name || config?.title || "Vistta App",
-    identifier: config?.app?.id || "org.vistta.app",
+    productName: `${appName}${suffix}`,
+    identifier: appId,
     version: "0.1.0",
     build: {
       beforeBuildCommand: "",
@@ -28,7 +34,8 @@ export async function mergeConfig(targetDir, config) {
       windows: [
         {
           label: "main",
-          title: config?.app?.title || config?.title || "Vistta App",
+          title:
+            config?.app?.title || config?.title ? `${config?.app?.title || config?.title}${suffix}` : `Vistta App${suffix}`,
           width: config?.app?.width ?? 1280,
           height: config?.app?.height ?? 800,
           minWidth: config?.app?.minWidth ?? 320,
@@ -81,10 +88,6 @@ function buildSigning(config) {
       ...(s.android.minSdkVersion ? { minSdkVersion: s.android.minSdkVersion } : {}),
       ...(s.android.versionCode ? { versionCode: s.android.versionCode } : {}),
     };
-    // Keystore credentials are surfaced via env vars (TAURI_ANDROID_*) at build time —
-    // we expose the file path here so `tauri android build` finds it, but never
-    // embed the passwords in tauri.conf.json.
-    if (s.android.keystorePath) out.android.signingConfig = { keystorePath: s.android.keystorePath };
   }
   if (s.windows) {
     out.windows = { wix: {}, nsis: {} };

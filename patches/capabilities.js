@@ -32,7 +32,6 @@ export async function patchCapabilities(targetDir, config) {
   const target = config?.target;
   const enabledPlugins = target ? pluginsFor(target) : PLUGINS;
 
-  // De-duplicate by JSON identity (preserves order of first occurrence).
   const seen = new Set();
   const permissions = [];
   const push = (p) => {

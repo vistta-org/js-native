@@ -1,17 +1,21 @@
 import fs from "@vistta/fs";
 import {
-  generateForegroundService,
   mergeConfig,
+  patchAlarmReceiver,
   patchAndroidManifest,
+  patchAndroidSigning,
+  patchAndroidStrings,
+  patchApplicationIdSuffix,
   patchBuildTask,
   patchCapabilities,
   patchCargoToml,
+  patchForegroundService,
   patchLibRs,
   patchMainActivity,
   patchMainRs,
-  removeForegroundService,
 } from "./patches/index.js";
-import { exec, generateIcons, getInfo, platform } from "./utils/index.js";
+import { exec, generateIcons, getInfo, platform, resolveAppId } from "./utils/index.js";
+import { ensureKeystore } from "./utils/keytool.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
 const DEV = process.env.NODE_ENV === "development";
@@ -41,7 +45,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
  * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
  * @property {(message: string, isError: boolean) => void} [onOutput] - Receives stdout/stderr lines from `tauri`. When provided, child stdio is piped; otherwise it's inherited.
- * @property {Object} [signing] - Platform code-signing settings; see config.js#buildSigning.
+ * @property {Object} [signing] - Platform code-signing settings; see config.js#buildSigning. Set `signing: false` to opt out of Android release signing (produces an unsigned APK).
  */
 
 /**
@@ -62,17 +66,18 @@ export async function run(config) {
       try {
         let closeCallback = null;
         let closed = false;
+        const appId = resolveAppId(config);
         await adb(
           `install -r ${fs.resolve(
             config.buildDir,
             "gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk",
           )}`,
         );
-        await adb(`shell am start -n ${config.app.id}/.MainActivity`);
+        await adb(`shell am start -n ${appId}/${config.app.id}.MainActivity`);
         const interval = setInterval(async () => {
           try {
-            const result = await adb(`shell dumpsys activity activities ${config.app.id}`);
-            if (!result.toString().includes(config.app.id)) throw new Error("App not running");
+            const result = await adb(`shell dumpsys activity activities ${appId}`);
+            if (!result.toString().includes(appId)) throw new Error("App not running");
           } catch {
             closed = true;
             if (closeCallback) closeCallback(0, null);
@@ -84,8 +89,8 @@ export async function run(config) {
             if (event === "close") closeCallback = callback;
           },
           close: async () => {
-            await adb(`shell am force-stop ${config.app.id}`);
-            await adb(`shell pm uninstall ${config.app.id}`);
+            await adb(`shell am force-stop ${appId}`);
+            await adb(`shell pm uninstall ${appId}`);
           },
           end: () =>
             new Promise((resolve) => {
@@ -105,10 +110,6 @@ export async function run(config) {
     default:
       throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
   }
-}
-
-function adb(args, options) {
-  return exec("adb", args, { shell: false, ...options }).end();
 }
 
 /**
@@ -131,17 +132,12 @@ export async function build(config) {
   const type = /** @type {"release" | "debug"} */ (DEV ? "debug" : "release");
   const debug = DEV ? "--debug" : "";
 
-  // Always pipe so we can parse lines. Forward chunks to caller's onOutput too,
-  // if they supplied one. The artifacts array is per-call so concurrent builds
-  // (rare, but possible from the CLI's `app` target) don't cross-contaminate.
   const artifacts = [];
   const collectLine = (line) => {
     const m = line.match(/Finished\s+\d+\s+\S+\s+at:\s*(.+)$/i);
     if (m) artifacts.push(m[1].trim());
   };
   const onLine = (msg, isError) => {
-    // Normalise CRLF and split into lines, then feed to both the consumer
-    // (if any) and our parser.
     for (const line of String(msg).replace(/\r\n/g, "\n").split("\n")) {
       if (!line) continue;
       collectLine(line);
@@ -151,18 +147,20 @@ export async function build(config) {
 
   switch (config.target) {
     case "android": {
-      if (!fs.existsSync(fs.resolve(cwd, "gen", "android"))) await tauri("android init", { cwd, onLine });
+      const androidGen = fs.resolve(cwd, "gen", "android");
+      if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
+      if (config.target === "android") await ensureAndroidKeystore(cwd, config);
       await patchBuildTask(cwd, config);
       await patchAndroidManifest(cwd, config);
-      if (config?.app?.background) {
-        await generateForegroundService(cwd, config);
-        await patchMainActivity(cwd, config);
-      } else {
-        await removeForegroundService(cwd, config);
-      }
+      await patchAndroidStrings(cwd, config);
+      await patchAndroidSigning(cwd, config);
+      await patchMainActivity(cwd, config);
+      await patchForegroundService(cwd, config);
+      await patchAlarmReceiver(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
       try {
+        if (DEV) await patchApplicationIdSuffix(cwd);
         await tauri(`android build ${debug}`, { cwd, onLine });
       } catch {
         throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
@@ -178,8 +176,6 @@ export async function build(config) {
       return { type, paths: artifacts };
     }
     case "desktop": {
-      // Icon generation runs outside the try block so a bad source icon doesn't
-      // get reported as a missing toolchain.
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
       try {
@@ -187,40 +183,12 @@ export async function build(config) {
       } catch {
         throw new Error(desktopBuildHint());
       }
-      // Desktop doesn't emit `Finished ... at:` markers; the binary location
-      // is deterministic. Look in release/ first, then debug/.
       artifacts.push(...(await defaultDesktopArtifacts(cwd, debug)));
       return { type, paths: artifacts };
     }
     default:
       throw new Error(`Unsupported target "${config.target}". Supported: desktop, android, ios.`);
   }
-}
-
-function defaultAndroidArtifacts(cwd, debug) {
-  const buildType = debug ? "debug" : "release";
-  const suffix = debug ? "debug" : "release-unsigned";
-  return [
-    fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-${suffix}.apk`),
-    fs.resolve(
-      cwd,
-      `gen/android/app/build/outputs/bundle/universal${buildType === "debug" ? "Debug" : "Release"}/app-universal-${buildType === "debug" ? "debug" : "release"}.aab`,
-    ),
-  ];
-}
-
-function defaultIosArtifacts(cwd) {
-  return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
-}
-
-async function defaultDesktopArtifacts(cwd, debug) {
-  const info = await getInfo({});
-  const exe = info.name + (platform() === "win32" ? ".exe" : "");
-  const release = fs.resolve(cwd, "target/release", exe);
-  const dbg = fs.resolve(cwd, "target/debug", exe);
-  if (fs.existsSync(release)) return [release];
-  if (fs.existsSync(dbg)) return [dbg];
-  return [debug ? dbg : release];
 }
 
 /**
@@ -250,6 +218,99 @@ export function artifactName({ appName, version, type, sourcePath }) {
   const includeType = /^(apk|exe)$/i.test(ext);
   const typeSeg = includeType ? `-${type}` : "";
   return `${baseName}${ver}${typeSeg}${ext}`;
+}
+
+export { getInfo, platform };
+
+function defaultAndroidArtifacts(cwd, debug) {
+  const buildType = debug ? "debug" : "release";
+  const apkName = debug ? `app-universal-${buildType}.apk` : null;
+  const aabName = debug ? "debug" : "release";
+  const aabDir = debug ? "universalDebug" : "universalRelease";
+  const out = [];
+  if (apkName) {
+    out.push(fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/${apkName}`));
+  } else {
+    out.push(
+      fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release.apk`),
+      fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release-unsigned.apk`),
+    );
+  }
+  out.push(fs.resolve(cwd, `gen/android/app/build/outputs/bundle/${aabDir}/app-universal-${aabName}.aab`));
+  return out;
+}
+
+/**
+ * Generates a release keystore for the Android build (zero-config) and
+ * wires the credentials so Tauri can sign the resulting APK. On first run
+ * a 2048-bit RSA keystore is created with a random password at
+ * `<buildDir>/keystore/release.keystore`; the password is persisted to a
+ * sibling `.credentials` file so subsequent builds reuse the same cert
+ * (updates install over previous). A copy of both is also mirrored to
+ * `<buildDir>/.keystore/` (outside gen/android) so the cert survives a
+ * `tauri android init` regeneration — it's restored before signing.
+ *
+ * The keystore is consumed at build time via Gradle's `build.gradle.kts`
+ * (which reads from `gen/android/keystore.properties` — written by
+ * patchAndroidSigning()). Credentials are also exposed as env vars
+ * (TAURI_ANDROID_KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD) for any
+ * downstream tooling that reads them.
+ *
+ * Inputs (all optional):
+ *   - alias: `config.signing.android.keyAlias`  → `app.id`  → "android"
+ *   - path:  `config.signing.android.keystorePath` → `<buildDir>/keystore/release.keystore`
+ *
+ * Set `config.signing = false` to opt out and produce an unsigned APK
+ * (the pre-keystore behaviour).
+ */
+async function ensureAndroidKeystore(cwd, config) {
+  if (config?.signing === false) return;
+  const keystoreAbs = fs.resolve(cwd, config?.signing?.android?.keystorePath || "gen/android/app/keystore/release.keystore");
+
+  // The keystore must live inside gen/android so Gradle/AGP resolves `storeFile`
+  // relative to the :app module (out-of-tree paths aren't picked up). But
+  // `tauri android init` wipes gen/android, which would destroy the cert. So we
+  // keep a persistent backup outside gen/android and restore it before signing.
+  const backupDir = fs.resolve(cwd, ".keystore");
+  const backupKeystore = fs.resolve(backupDir, "release.keystore");
+  const backupCreds = fs.resolve(backupDir, ".credentials");
+  const credsAbs = fs.resolve(fs.dirname(keystoreAbs), ".credentials");
+  if (!fs.existsSync(keystoreAbs) && fs.existsSync(backupKeystore) && fs.existsSync(backupCreds)) {
+    await fs.mkdir(fs.dirname(keystoreAbs), { recursive: true });
+    await fs.copyFile(backupKeystore, keystoreAbs);
+    await fs.copyFile(backupCreds, credsAbs);
+  }
+
+  const { alias, storePassword, keyPassword } = await ensureKeystore({
+    keystorePath: keystoreAbs,
+    alias: config?.signing?.android?.keyAlias,
+    appId: config?.app?.id,
+  });
+
+  // Mirror the cert + credentials to the persistent backup so a future
+  // gen/android regeneration can restore the same signing identity.
+  await fs.mkdir(backupDir, { recursive: true });
+  await fs.copyFile(keystoreAbs, backupKeystore);
+  if (fs.existsSync(credsAbs)) await fs.copyFile(credsAbs, backupCreds);
+
+  process.env.TAURI_ANDROID_KEYSTORE_PASSWORD = storePassword;
+  process.env.TAURI_ANDROID_KEY_ALIAS = alias;
+  process.env.TAURI_ANDROID_KEY_PASSWORD = keyPassword;
+  config.__androidKeystore = { keystorePath: keystoreAbs, alias, storePassword, keyPassword };
+}
+
+function defaultIosArtifacts(cwd) {
+  return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
+}
+
+async function defaultDesktopArtifacts(cwd, debug) {
+  const info = await getInfo({});
+  const exe = info.name + (platform() === "win32" ? ".exe" : "");
+  const release = fs.resolve(cwd, "target/release", exe);
+  const dbg = fs.resolve(cwd, "target/debug", exe);
+  if (fs.existsSync(release)) return [release];
+  if (fs.existsSync(dbg)) return [dbg];
+  return [debug ? dbg : release];
 }
 
 /**
@@ -286,38 +347,21 @@ function desktopBuildHint() {
   }
 }
 
+function adb(args, options) {
+  return exec("adb", args, { shell: false, ...options }).end();
+}
+
 /**
  * Spawns `npx tauri <args>` and waits for completion.
  *
- * Three modes:
- *  - `onLine` set: pipe stdio, split into lines, dispatch to onLine. Raw
- *    chunks are also written to `process.stdout` so the user sees Cargo's
- *    progress bars in real-time (without this, piping buffers and the build
- *    appears to hang for 5-15 min on the first compile).
- *  - `onOutput` set: legacy chunked interface. Same tee-to-stdout treatment.
- *  - neither: stdio inherited (writes straight to the parent TTY). No parsing,
- *    no buffering — the original fast path.
+ * The mode handling (tee-to-TTY + dispatch when an `onLine`/`onOutput`
+ * callback is present, inherit-stdio fast path otherwise) lives in `exec()`
+ * so every spawned command — adb, the desktop binary, this one — gets the
+ * same treatment. This wrapper is now just a thin convenience for the
+ * `npx tauri` prefix.
  *
  * Rejects on non-zero exit.
  */
 function tauri(args, options = {}) {
-  const { onLine, onOutput, cwd } = options;
-  const handler = onLine || onOutput;
-  if (!handler) {
-    return exec("npx", `tauri ${args}`, { cwd, stdio: "inherit" }).end();
-  }
-  // Wrap the user callback so we can both (a) dispatch to it and (b) mirror
-  // raw chunks to the parent's stdout. This is what restores the streaming
-  // progress behaviour the user had before we introduced line-buffered parsing.
-  const wrapped = (msg, isError) => {
-    if (process.stdout?.writable) process.stdout.write(msg);
-    handler(msg, isError);
-  };
-  return exec("npx", `tauri ${args}`, { cwd, stdio: "pipe", onOutput: wrapped }).end();
+  return exec("npx", `tauri ${args}`, options).end();
 }
-
-// Namespace alias matching README usage: `import { Tauri } from "@vistta/js-runtime"`.
-export const Tauri = { run, build };
-
-// Re-exports for advanced use.
-export { getInfo, platform };

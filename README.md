@@ -174,6 +174,68 @@ Derives a versioned destination filename for an artifact produced by `build()`. 
 
 Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName` and `version` are collapsed to a single `-` so the filename is safe on Windows, macOS, and Linux.
 
+## Android signing & debug builds
+
+### Release keystore (auto-generated and backed up)
+
+For release Android builds the runtime needs a signing keystore. If one does not
+already exist at the configured `signing.android.keystorePath` (default
+`gen/android/app/keystore/release.keystore`), the runtime generates a 2048-bit
+RSA keystore with a random password and persists the credentials alongside it.
+
+Because `tauri android init` regenerates the `gen/android` tree from scratch —
+which would wipe an in-tree keystore — the runtime mirrors the keystore and its
+credentials to a persistent `.keystore/` directory in `buildDir`. On the next
+build it restores them into `gen/android` before signing, so the **release
+signing identity stays stable across regenerations**. Commit `.keystore/` to keep
+the identity reproducible; treat it as a secret.
+
+> Android Gradle resolves `storeFile` relative to the `:app` module, so the
+> keystore must live inside `gen/android` at build time — the `.keystore/` mirror
+> exists purely so it can be restored after a regeneration.
+
+### Parallel debug install
+
+Dev builds (`run`, or `build` under `NODE_ENV=development`) are produced as the
+`debug` variant with the application id suffixed by `.debug` (e.g.
+`com.example.app.debug`). Combined with the debug build type's auto-generated
+debug keystore, the resulting APK **installs side-by-side with the release
+build** instead of overwriting it. The `namespace` and package source paths are
+unchanged — only the runtime `applicationId` is suffixed — so the activity class
+remains `<app.id>.MainActivity`. The release `applicationId` is never modified.
+
+### WebView devtools on Android
+
+The dev build also enables the system WebView's content debugger
+(`WebView.setWebContentsDebuggingEnabled(true)`) at MainActivity start, gated
+on `BuildConfig.DEBUG` so the call is compiled out of release builds. Combined
+with the debug variant's `android:debuggable="true"`, the app's webview shows
+up in Chrome at `chrome://inspect/#devices`, so you can attach DevTools
+(console, network, elements) against a Vistta Android dev build the same way
+you would for a native Android app. The call is removed entirely from release
+APKs, so remote inspection is never reachable for shipped builds.
+
+### `(DEV)` title suffix
+
+Dev builds append ` [DEV]` to the runtime-default `productName` and window
+`title` in `tauri.conf.json`, so dev and release builds are visually
+distinguishable when both are installed on the same desktop or device
+launcher. Custom values supplied via `config.app.title` / `config.title` /
+`config.app.name` are kept verbatim — the suffix is only added to the
+runtime defaults, so a release build is always bit-identical to a build made
+without `NODE_ENV=development` and projects that already set their own
+labels see no change.
+
+On Android the same suffix is also pushed into `res/values/strings.xml`
+(`app_name` + `main_activity_title`) so the launcher label and the in-app
+title bar actually render with the ` [DEV]` tag — without this, Tauri's
+init-time-generated `strings.xml` is never re-touched by the runtime and
+the launcher keeps showing the unsuffixed name even when `productName` in
+`tauri.conf.json` is updated. The patch only touches the default-locale
+file the manifest's `android:label` references; localisation files
+(e.g. `res/values-pt/strings.xml`) are left untouched. Toggling between
+dev and release switches the suffix in both directions on the next build.
+
 ## Integrations
 
 Import plugin namespaces from `@vistta/js-runtime/plugins`:

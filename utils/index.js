@@ -27,11 +27,33 @@ export async function getInfo(config) {
     version: pkg.version || "0.1.0",
     description: pkg.description || pkg.name || "",
     author,
-    // Suffix `_lib` so the auto-derived binary (`<name>`) and the lib target have
-    // distinct filenames; without this Windows emits an output-collision warning
-    // and the build can fail when both `src/main.rs` and `src/lib.rs` are present.
     lib: `${sanitizeCrateName(slug)}_lib`,
   };
+}
+
+/**
+ * Returns the app ID the build is actually targeting. In development (NODE_ENV=development)
+ * a `.debug` suffix is appended so the resulting APK installs side-by-side with the
+ * release build. Every patch and the build switch itself call this so the source
+ * layout under `gen/android/app/src/main/java/<id>/...` always matches the
+ * identifier Tauri just generated.
+ */
+export function resolveAppId(config) {
+  const id = config?.app?.id || "org.vistta.app";
+  return process.env.NODE_ENV === "development" ? `${id}.debug` : id;
+}
+
+/**
+ * Suffix appended to user-facing display names (window title, launcher label,
+ * notification text, etc.) when `NODE_ENV=development`, so dev and release
+ * builds are visually distinguishable on a device that has both installed.
+ * Empty string in release builds. Single source of truth for the format —
+ * `mergeConfig` (tauri.conf.json productName/title), the Android manifest
+ * patch, and the Android strings.xml patch all read from here so they
+ * never drift apart.
+ */
+export function devSuffix() {
+  return process.env.NODE_ENV === "development" ? " [DEV]" : "";
 }
 
 // Cargo crate name rules: snake_case, must start with a letter, cannot be a Rust
@@ -72,6 +94,25 @@ function sanitizeCrateName(slug) {
  *
  * Returns a handle with `close()`, `on(event, cb)`, and `end()` (Promise that
  * resolves with the child on exit code 0, or rejects otherwise).
+ *
+ * Output handling — three modes, picked from the options bag:
+ *
+ *  - `stdio: "inherit"` (explicit): the child's stdio is bound straight to the
+ *    parent TTY. No parsing, no buffering, no callback. Use this for short
+ *    commands where you don't want captured output (e.g. background adb polls
+ *    that would otherwise spam the terminal every second).
+ *  - `onOutput` callback set: stdio is piped and every chunk is (a) written
+ *    verbatim to `process.stdout` so the user sees live progress bars while
+ *    the callback parses them, and (b) forwarded to `onOutput(msg, isError)`
+ *    for line-splitting / artifact collection. `isError` is a heuristic
+ *    (`/\b(error|failed)\b/i.test(msg)`) — true for either stream.
+ *  - neither (default): stdio is inherited. Equivalent to passing
+ *    `stdio: "inherit"` explicitly, but kept as the no-arg default so callers
+ *    like `run()`'s adb polling get the quiet fast path automatically.
+ *
+ * The legacy `on(event, cb)` interface (where `event === "data"` attaches a
+ * second listener post-spawn) is preserved for backward compatibility — it
+ * only works when stdio is piped.
  *
  * @param {string} cmd
  * @param {string|string[]|object} [args]
@@ -119,12 +160,14 @@ export function exec(cmd, args = "", options = {}) {
     } else env = { ...process.env };
   }
   const { onOutput, ...spawnOptions } = options || {};
-  const merged = Object.assign({ stdio: onOutput ? "pipe" : "pipe", shell: shellDefault, env }, spawnOptions);
+  const stdio = spawnOptions.stdio ? spawnOptions.stdio : onOutput ? "pipe" : "inherit";
+  const merged = Object.assign({ stdio, shell: shellDefault, env }, spawnOptions);
   const child = spawn(cmd, argv, /** @type {any} */ (merged));
 
   if (onOutput && merged.stdio === "pipe") {
     const handler = (data) => {
       const msg = data.toString();
+      if (process.stdout?.writable) process.stdout.write(msg);
       onOutput(msg, /\b(error|failed)\b/i.test(msg));
     };
     child.stdout?.on("data", handler);

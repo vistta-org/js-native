@@ -1,9 +1,12 @@
 export {
-  generateForegroundService,
+  patchAlarmReceiver,
   patchAndroidManifest,
+  patchAndroidSigning,
+  patchAndroidStrings,
+  patchApplicationIdSuffix,
   patchBuildTask,
+  patchForegroundService,
   patchMainActivity,
-  removeForegroundService,
 } from "./android.js";
 export { patchCapabilities } from "./capabilities.js";
 export { mergeConfig } from "./config.js";
