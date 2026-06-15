@@ -1,5 +1,5 @@
 import fs from "@vistta/fs";
-import { devSuffix, writeIfChanged } from "../utils/index.js";
+import { devSuffix, nameSuffix, resolveAppId, writeIfChanged } from "../utils/index.js";
 
 /**
  * Writes `tauri.conf.json` by deep-merging the consumer config and any `extraTauriConfig`
@@ -11,16 +11,20 @@ import { devSuffix, writeIfChanged } from "../utils/index.js";
  */
 export async function mergeConfig(targetDir, config) {
   const confPath = fs.resolve(targetDir, "tauri.conf.json");
-  const appId = config?.app?.id || "org.vistta.app";
+  const appId = resolveAppId(config);
   const appName = config?.app?.name || config?.title || "Vistta App";
-  // The shared devSuffix() helper returns " [DEV]" in development, "" in
-  // release. Read it once into a different-named local so we don't shadow
-  // the imported function in this scope.
-  const suffix = devSuffix();
+  // Two suffixes, two purposes:
+  //   - nameSuffix() (".dev" in dev) goes into productName so dev + release
+  //     installs have distinct machine names and can coexist on the same
+  //     device. Empty in release.
+  //   - devSuffix() (" [DEV]" in dev) goes into user-visible strings (window
+  //     title, Android launcher label) so the running app is marked.
+  const name = nameSuffix();
+  const dev = devSuffix();
 
   const generated = {
     $schema: "https://schema.tauri.app/config/2",
-    productName: `${appName}${suffix}`,
+    productName: `${appName}${name}`,
     identifier: appId,
     version: "0.1.0",
     build: {
@@ -34,8 +38,7 @@ export async function mergeConfig(targetDir, config) {
       windows: [
         {
           label: "main",
-          title:
-            config?.app?.title || config?.title ? `${config?.app?.title || config?.title}${suffix}` : `Vistta App${suffix}`,
+          title: config?.app?.title || config?.title ? `${config?.app?.title || config?.title}${dev}` : `Vistta App${dev}`,
           width: config?.app?.width ?? 1280,
           height: config?.app?.height ?? 800,
           minWidth: config?.app?.minWidth ?? 320,

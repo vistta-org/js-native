@@ -5,7 +5,7 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./plugins": "./plugins.js"
+    "./plugins": "./plugins/index.js"
   },
   "type": "module",
   "scripts": {

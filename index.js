@@ -1,23 +1,21 @@
 import fs from "@vistta/fs";
+import { applyTemplate } from "./apply-template.js";
 import {
   mergeConfig,
-  patchAlarmReceiver,
   patchAndroidManifest,
-  patchAndroidSigning,
   patchAndroidStrings,
-  patchApplicationIdSuffix,
   patchBuildTask,
   patchCapabilities,
   patchCargoToml,
-  patchForegroundService,
   patchLibRs,
   patchMainActivity,
   patchMainRs,
+  patchVisttaService,
 } from "./patches/index.js";
 import { exec, generateIcons, getInfo, platform, resolveAppId } from "./utils/index.js";
-import { ensureKeystore } from "./utils/keytool.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
+const TAURI_VERSION = "2.11.2";
 const DEV = process.env.NODE_ENV === "development";
 
 /**
@@ -35,7 +33,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {boolean} [app.resizable] - Allow window resize.
  * @property {boolean} [app.fullscreen] - Start in fullscreen.
  * @property {boolean} [app.devTools] - Open DevTools on startup.
- * @property {boolean} [app.background] - Keep running in background (tray on desktop, foreground service on Android).
+ * @property {boolean} [app.background] - Desktop only. When true, the app stays alive in the background (tray icon + hide-on-close). Has no effect on Android/iOS.
  * @property {string} [title] - Window title.
  * @property {string} [icon] - Icon path (relative to buildDir/www).
  * @property {string} [backgroundColor] - Window background color (hex).
@@ -44,8 +42,8 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
  * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
- * @property {(message: string, isError: boolean) => void} [onOutput] - Receives stdout/stderr lines from `tauri`. When provided, child stdio is piped; otherwise it's inherited.
- * @property {Object} [signing] - Platform code-signing settings; see config.js#buildSigning. Set `signing: false` to opt out of Android release signing (produces an unsigned APK).
+ * @param {(message: string, isError: boolean) => void} [onOutput] - Receives stdout/stderr lines from `tauri`. When provided, child stdio is piped; otherwise it's inherited.
+ * @property {Object} [signing] - Platform code-signing settings. Windows + macOS settings are forwarded to `tauri.conf.json` bundle config; Android signing is currently opt-in (set `signing.android` to provide a pre-existing keystore) and the runtime does not auto-generate a keystore.
  */
 
 /**
@@ -73,7 +71,7 @@ export async function run(config) {
             "gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk",
           )}`,
         );
-        await adb(`shell am start -n ${appId}/${config.app.id}.MainActivity`);
+        await adb(`shell am start -n ${appId}/${appId}.MainActivity`);
         const interval = setInterval(async () => {
           try {
             const result = await adb(`shell dumpsys activity activities ${appId}`);
@@ -125,7 +123,7 @@ export async function run(config) {
  * @returns {Promise<{ type: "release" | "debug", paths: string[] }>}
  */
 export async function build(config) {
-  await applyTemplate(config);
+  await applyConfig(config);
 
   const cwd = config.buildDir;
   const iconPath = resolveIconPath(config);
@@ -149,18 +147,14 @@ export async function build(config) {
     case "android": {
       const androidGen = fs.resolve(cwd, "gen", "android");
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
-      if (config.target === "android") await ensureAndroidKeystore(cwd, config);
       await patchBuildTask(cwd, config);
       await patchAndroidManifest(cwd, config);
       await patchAndroidStrings(cwd, config);
-      await patchAndroidSigning(cwd, config);
       await patchMainActivity(cwd, config);
-      await patchForegroundService(cwd, config);
-      await patchAlarmReceiver(cwd, config);
+      await patchVisttaService(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
       try {
-        if (DEV) await patchApplicationIdSuffix(cwd);
         await tauri(`android build ${debug}`, { cwd, onLine });
       } catch {
         throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
@@ -220,7 +214,7 @@ export function artifactName({ appName, version, type, sourcePath }) {
   return `${baseName}${ver}${typeSeg}${ext}`;
 }
 
-export { getInfo, platform };
+export { getInfo, platform, TAURI_VERSION };
 
 function defaultAndroidArtifacts(cwd, debug) {
   const buildType = debug ? "debug" : "release";
@@ -240,65 +234,6 @@ function defaultAndroidArtifacts(cwd, debug) {
   return out;
 }
 
-/**
- * Generates a release keystore for the Android build (zero-config) and
- * wires the credentials so Tauri can sign the resulting APK. On first run
- * a 2048-bit RSA keystore is created with a random password at
- * `<buildDir>/keystore/release.keystore`; the password is persisted to a
- * sibling `.credentials` file so subsequent builds reuse the same cert
- * (updates install over previous). A copy of both is also mirrored to
- * `<buildDir>/.keystore/` (outside gen/android) so the cert survives a
- * `tauri android init` regeneration — it's restored before signing.
- *
- * The keystore is consumed at build time via Gradle's `build.gradle.kts`
- * (which reads from `gen/android/keystore.properties` — written by
- * patchAndroidSigning()). Credentials are also exposed as env vars
- * (TAURI_ANDROID_KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD) for any
- * downstream tooling that reads them.
- *
- * Inputs (all optional):
- *   - alias: `config.signing.android.keyAlias`  → `app.id`  → "android"
- *   - path:  `config.signing.android.keystorePath` → `<buildDir>/keystore/release.keystore`
- *
- * Set `config.signing = false` to opt out and produce an unsigned APK
- * (the pre-keystore behaviour).
- */
-async function ensureAndroidKeystore(cwd, config) {
-  if (config?.signing === false) return;
-  const keystoreAbs = fs.resolve(cwd, config?.signing?.android?.keystorePath || "gen/android/app/keystore/release.keystore");
-
-  // The keystore must live inside gen/android so Gradle/AGP resolves `storeFile`
-  // relative to the :app module (out-of-tree paths aren't picked up). But
-  // `tauri android init` wipes gen/android, which would destroy the cert. So we
-  // keep a persistent backup outside gen/android and restore it before signing.
-  const backupDir = fs.resolve(cwd, ".keystore");
-  const backupKeystore = fs.resolve(backupDir, "release.keystore");
-  const backupCreds = fs.resolve(backupDir, ".credentials");
-  const credsAbs = fs.resolve(fs.dirname(keystoreAbs), ".credentials");
-  if (!fs.existsSync(keystoreAbs) && fs.existsSync(backupKeystore) && fs.existsSync(backupCreds)) {
-    await fs.mkdir(fs.dirname(keystoreAbs), { recursive: true });
-    await fs.copyFile(backupKeystore, keystoreAbs);
-    await fs.copyFile(backupCreds, credsAbs);
-  }
-
-  const { alias, storePassword, keyPassword } = await ensureKeystore({
-    keystorePath: keystoreAbs,
-    alias: config?.signing?.android?.keyAlias,
-    appId: config?.app?.id,
-  });
-
-  // Mirror the cert + credentials to the persistent backup so a future
-  // gen/android regeneration can restore the same signing identity.
-  await fs.mkdir(backupDir, { recursive: true });
-  await fs.copyFile(keystoreAbs, backupKeystore);
-  if (fs.existsSync(credsAbs)) await fs.copyFile(credsAbs, backupCreds);
-
-  process.env.TAURI_ANDROID_KEYSTORE_PASSWORD = storePassword;
-  process.env.TAURI_ANDROID_KEY_ALIAS = alias;
-  process.env.TAURI_ANDROID_KEY_PASSWORD = keyPassword;
-  config.__androidKeystore = { keystorePath: keystoreAbs, alias, storePassword, keyPassword };
-}
-
 function defaultIosArtifacts(cwd) {
   return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
 }
@@ -314,14 +249,15 @@ async function defaultDesktopArtifacts(cwd, debug) {
 }
 
 /**
- * Copies the Rust template into buildDir and applies all generators/patches.
- * Generated files (Cargo.toml, lib.rs, main.rs, tauri.conf.json, capabilities/default.json)
- * are always overwritten — consumers customise via the config object, not by editing files.
+ * Seeds buildDir from the package's `template/` directory (a verbatim
+ * `tauri init` baseline at TAURI_VERSION), then runs the generators
+ * (patchMainRs, patchLibRs, patchCargoToml, mergeConfig, patchCapabilities)
+ * which overwrite their files in full. Consumers customise via the
+ * config object, not by editing files in buildDir.
  */
-async function applyTemplate(config) {
+async function applyConfig(config) {
   const cwd = config.buildDir;
-  await fs.mkdir(cwd, { recursive: true });
-  await fs.cp(TEMPLATE_DIR, cwd, { recursive: true });
+  await applyTemplate({ buildDir: cwd, tplDir: TEMPLATE_DIR });
   await patchMainRs(cwd, config);
   await patchLibRs(cwd, config);
   await patchCargoToml(cwd, config);

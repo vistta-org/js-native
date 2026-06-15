@@ -1,28 +1,37 @@
 import fs from "@vistta/fs";
-import { devSuffix, writeIfChanged } from "../utils/index.js";
+import { devSuffix, resolveAppId, writeIfChanged } from "../utils/index.js";
 
-const PERMS = { begin: "<!-- vistta:permissions:begin -->", end: "<!-- vistta:permissions:end -->" };
-const SERVICE = { begin: "<!-- vistta:service:begin -->", end: "<!-- vistta:service:end -->" };
 const STRINGS = { begin: "<!-- vistta:strings:begin -->", end: "<!-- vistta:strings:end -->" };
 const ACTIVITY = { begin: "// vistta:activity:begin", end: "// vistta:activity:end" };
 const ACTIVITY_IMPORTS = { begin: "// vistta:activity-imports:begin", end: "// vistta:activity-imports:end" };
-const ACTIVITY_MEMBERS = { begin: "// vistta:activity-members:begin", end: "// vistta:activity-members:end" };
-const ACTIVITY_TICK = { begin: "// vistta:activity-tick:begin", end: "// vistta:activity-tick:end" };
-const SIGNING_IMPORTS = { begin: "// vistta:signing-imports:begin", end: "// vistta:signing-imports:end" };
-const SIGNING_CONFIGS = { begin: "// vistta:signing-configs:begin", end: "// vistta:signing-configs:end" };
-const SIGNING_REFERENCE = { begin: "// vistta:signing-reference:begin", end: "// vistta:signing-reference:end" };
+const ACTIVITY_WEBVIEW = { begin: "// vistta:webview:begin", end: "// vistta:webview:end" };
+const ACTIVITY_WEBVIEW_BRIDGE = { begin: "// vistta:webview-bridge:begin", end: "// vistta:webview-bridge:end" };
+const SERVICE = { begin: "<!-- vistta:service:begin -->", end: "<!-- vistta:service:end -->" };
+const SERVICE_PERMS = { begin: "<!-- vistta:service-perms:begin -->", end: "<!-- vistta:service-perms:end -->" };
+
+// Note: signing keystore / applicationIdSuffix patches have been removed
+// (see package-level docs).
+//
+// Foreground-service based scheduling is back (see patchVisttaService).
+// The service holds the process + webview alive so setBackgroundInterval
+// callbacks keep firing when the app is backgrounded or the device is
+// locked. Service is auto-stopped when no timers are registered.
 
 /**
- * Tauri's generated BuildTask.kt invokes `npm run -- tauri ...` which fails when
- * the consumer's package.json has no `tauri` script. We rewrite it to call the
- * `tauri` CLI binary directly (resolved from node_modules/.bin, which is on the
- * PATH Gradle passes to the task — `npx` is NOT, as its install dir is absent
- * from that PATH). The replacement is idempotent: it also rewrites a previously
- * patched `npx tauri ...` form. If Tauri changes the format dramatically the
- * patch silently no-ops.
+ * Rewrites Tauri 2.11.2's generated `BuildTask.kt` to call the `tauri` CLI
+ * binary directly, instead of going through `npm run -- tauri ...`. The
+ * latter assumes the consumer's `package.json` has a `tauri` script; this
+ * runtime reaches the tauri binary via `npx tauri` from `index.js`, not
+ * through an npm script. Rewriting to a direct invocation makes the
+ * consumer's `package.json` self-contained (no `tauri` script required).
+ *
+ * Idempotent: also recognises and rewrites a previously-patched form
+ * (`executable = "tauri"`, args list without the `run`/`--`/`tauri` prefix).
+ * If Tauri changes the file's shape dramatically the patch silently
+ * no-ops — the build will then fail with a clear error from Gradle.
  */
 export async function patchBuildTask(targetDir, config) {
-  const appId = config?.app?.id || "org.vistta.app";
+  const appId = resolveAppId(config);
   const packagePath = appId.replace(/\./g, "/");
   const buildTaskPath = fs.resolve(
     targetDir,
@@ -38,111 +47,108 @@ export async function patchBuildTask(targetDir, config) {
   );
   if (!fs.existsSync(buildTaskPath)) return;
   let content = String(await fs.readFile(buildTaskPath, "utf8"));
+  // The tauri binary is resolved from PATH that Gradle passes to the task;
+  // node_modules/.bin is on that PATH (where the tauri CLI lives once the
+  // runtime's transitive deps install it). `npx` is NOT on that PATH.
   content = content.replace(/val\s+executable\s*=\s*"""(?:npm|npx)"""\s*;?/g, 'val executable = """tauri""";');
+  // Strip the `run`/`--`/`tauri` prefix from the args list, in either order.
   content = content.replace(/val\s+args\s*=\s*listOf\(\s*"run"\s*,\s*"--"\s*,\s*"tauri"\s*,\s*/g, "val args = listOf(");
   content = content.replace(/val\s+args\s*=\s*listOf\(\s*"tauri"\s*,\s*/g, "val args = listOf(");
   await writeIfChanged(buildTaskPath, content);
 }
 
-const DEBUG_SUFFIX_MARKER = "// vistta:debug-suffix:begin";
-
 /**
- * In development, append `.debug` to the debug buildType's `applicationId` so
- * the resulting APK installs side-by-side with the release build (different
- * applicationIds, different gradle auto-generated debug keystore, so they
- * coexist). The release `applicationId` is untouched. The `namespace` and
- * package source paths are unchanged — the suffix is purely an
- * `applicationId` override. It is applied from a separate trailing
- * `android { }` block because Tauri strips `applicationIdSuffix` from inside
- * its own managed `buildTypes` block on every `android build`.
+ * Adds the runtime-owned permissions to AndroidManifest.xml. The set is
+ * deliberately small — just notification and haptics primitives. Tauri
+ * auto-emits `INTERNET` and a few other framework permissions; we
+ * idempotently insert ours after the existing `INTERNET` line, or before
+ * `<application>` if it isn't present.
  */
-export async function patchApplicationIdSuffix(targetDir) {
-  const gradlePath = fs.resolve(targetDir, "gen", "android", "app", "build.gradle.kts");
-  if (!fs.existsSync(gradlePath)) return;
-  let content = String(await fs.readFile(gradlePath, "utf8"));
-  const marker = { begin: DEBUG_SUFFIX_MARKER, end: "// vistta:debug-suffix:end" };
-  const existing = new RegExp(`\\n*${escapeRe(marker.begin)}[\\s\\S]*?${escapeRe(marker.end)}`);
-  content = content.replace(existing, "");
-  const body = [
-    "android {",
-    "    buildTypes {",
-    '        getByName("debug") {',
-    '            applicationIdSuffix = ".debug"',
-    "        }",
-    "    }",
-    "}",
-  ].join("\n");
-  content = `${content.trimEnd()}\n\n${marker.begin}\n${body}\n${marker.end}\n`;
-  await writeIfChanged(gradlePath, content);
-}
-
 export async function patchAndroidManifest(targetDir, config) {
   const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
   if (!fs.existsSync(manifestPath)) return;
   let content = String(await fs.readFile(manifestPath, "utf8"));
-  const background = !!config?.app?.background;
 
   const perms = ["android.permission.POST_NOTIFICATIONS", "android.permission.VIBRATE"];
-  if (background) {
-    perms.push(
-      "android.permission.FOREGROUND_SERVICE",
-      "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
-      "android.permission.WAKE_LOCK",
-    );
-  }
   const permsBlock = perms.map((p) => `    <uses-permission android:name="${p}" />`).join("\n");
 
-  content = ensureBlock(content, PERMS, permsBlock, (c, generated) => {
-    if (/<uses-permission android:name="android\.permission\.INTERNET"\s*\/>/.test(c)) {
-      return c.replace(/(<uses-permission android:name="android\.permission\.INTERNET"\s*\/>)/, `$1\n${generated}`);
-    }
-    return c.replace(/(<application\b)/, `${generated}\n    $1`);
-  });
+  content = ensurePermissions(content, permsBlock);
 
-  if (background) {
-    const serviceBlock = [
-      `        <service`,
-      `            android:name=".VisttaForegroundService"`,
-      `            android:enabled="true"`,
-      `            android:exported="false"`,
-      `            android:foregroundServiceType="dataSync"`,
-      `            android:stopWithTask="false" />`,
-      `        <receiver`,
-      `            android:name=".VisttaAlarmReceiver"`,
-      `            android:enabled="true"`,
-      `            android:exported="false" />`,
-    ].join("\n");
-    content = ensureBlock(content, SERVICE, serviceBlock, (c, generated) =>
-      c.replace(/(\s*<\/application>)/, `\n${generated}$1`),
-    );
-  } else {
-    const re = new RegExp(`\\n?[ \\t]*${escapeRe(SERVICE.begin)}[\\s\\S]*?${escapeRe(SERVICE.end)}`);
-    content = content.replace(re, "");
-  }
+  // Foreground-service declarations. Always emitted so the manifest is
+  // complete on the first build (the service is only started when
+  // setBackgroundInterval is called from JS, but the declarations must
+  // exist before the manifest is processed). `FOREGROUND_SERVICE_DATA_SYNC`
+  // is the right type for "running a periodic JS task while the app is
+  // backgrounded" — it doesn't require a user-visible media notification
+  // and is allowed to run as long as the data sync is ongoing.
+  const appId = resolveAppId(config);
+  const serviceClass = `${appId}.VisttaService`;
+  const serviceBlock = [
+    `    <service`,
+    `        android:name="${serviceClass}"`,
+    `        android:exported="false"`,
+    `        android:foregroundServiceType="dataSync" />`,
+  ].join("\n");
+  const servicePermsBlock = [
+    `    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />`,
+    `    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />`,
+  ].join("\n");
+
+  content = ensureBlock(content, SERVICE_PERMS, servicePermsBlock, (c, generated) =>
+    c.replace(/(<uses-permission android:name="android\.permission\.INTERNET"\s*\/>)/, `$1\n${generated}`),
+  );
+  content = ensureBlock(content, SERVICE, serviceBlock, (c, generated) =>
+    c.replace(/(<\/application>)/, `${generated}\n$1`),
+  );
 
   await writeIfChanged(manifestPath, content);
 }
 
 /**
+ * Idempotently inserts the given `<uses-permission .../>` lines into the
+ * manifest. Each line is checked independently so a half-applied state
+ * (one perm present, one missing) converges on the next run.
+ *
+ * The expected manifest structure (Tauri's default) is:
+ *   <manifest ...>
+ *     <uses-permission android:name="android.permission.INTERNET" />
+ *     ...
+ *     <application ...>
+ * We look for `INTERNET` first and insert after it; otherwise we fall back
+ * to inserting before `<application>`.
+ */
+function ensurePermissions(content, block) {
+  const lines = block.split("\n");
+  let working = content;
+  for (const line of lines) {
+    const permName = line.match(/android:name="(.*?)"/)?.[1];
+    if (!permName) continue;
+    const existing = new RegExp(`<uses-permission[^>]*android:name="${permName.replace(/\./g, "\\.")}"[^>]*/>`);
+    if (existing.test(working)) continue;
+    if (/<uses-permission android:name="android\.permission\.INTERNET"\s*\/>/.test(working)) {
+      working = working.replace(/(<uses-permission android:name="android\.permission\.INTERNET"\s*\/>)/, `$1\n${line}`);
+    } else {
+      working = working.replace(/(<application\b)/, `${line}\n    $1`);
+    }
+  }
+  return working;
+}
+
+/**
  * Tauri generates `res/values/strings.xml` once on `tauri android init` and
- * never touches it again — so the launcher label (`@string/app_name`) and the
- * in-app title (`@string/main_activity_title`) keep whatever was baked in at
- * init time, even when `productName` in `tauri.conf.json` is later updated.
+ * never touches it again — so the launcher label (`@string/app_name`) and
+ * the in-app title (`@string/main_activity_title`) keep whatever was baked
+ * in at init time, even when `productName` in `tauri.conf.json` is later
+ * updated.
  *
- * That breaks the ` [DEV]` tag: `mergeConfig` correctly writes
- * `"Vistta Connect [DEV]"` to the JSON, but the Android launcher still shows
- * `"Vistta Connect"` because it reads from the (stale) `strings.xml`. This
- * patch brings the two back in sync by rewriting the two strings to match
- * the runtime's source of truth (`config.app.name` + the shared `devSuffix`).
+ * Brings the two strings back in sync with the runtime's source of truth
+ * (`config.app.name` + the shared `devSuffix`). Idempotent; toggling
+ * between dev and release switches the suffix in both directions on the
+ * next build.
  *
- * Idempotent. Toggling between dev and release switches the suffix in
- * both directions on the next build — no marker-stripping gymnastics
- * because the runtime is the authoritative source for these two values.
- *
- * A `<!-- vistta:strings:begin/end -->` marker pair is inserted on first
- * run so consumers can see what's runtime-owned and so localisation files
- * (e.g. `res/values-pt/strings.xml`) are skipped — this patch only touches
- * the default-locale file the manifest's `android:label` references.
+ * Only touches the default-locale file the manifest's `android:label`
+ * references; localisation files (e.g. `res/values-pt/strings.xml`) are
+ * left untouched.
  */
 export async function patchAndroidStrings(targetDir, config) {
   const stringsPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "res", "values", "strings.xml");
@@ -157,7 +163,6 @@ export async function patchAndroidStrings(targetDir, config) {
     if (re.test(content)) {
       content = content.replace(re, replacement);
     } else {
-      // Entry missing — add one inside the marker block (or create the block).
       content = ensureBlock(content, STRINGS, `    <string name="${name}">${appName}${suffix}</string>`, (c, generated) =>
         c.replace(/(<\/resources>)/, `${generated}\n$1`),
       );
@@ -173,212 +178,284 @@ export async function patchAndroidStrings(targetDir, config) {
  * so it can be cleanly replaced if the app name changes.
  */
 export async function patchMainActivity(targetDir, config) {
-  const appId = config?.app?.id || "org.vistta.app";
+  const appId = resolveAppId(config);
   const appName = config?.app?.name || "Vistta App";
-  const background = !!config?.app?.background;
   const packagePath = appId.replace(/\./g, "/");
   const activityPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "java", packagePath, "MainActivity.kt");
   if (!fs.existsSync(activityPath)) return;
 
-  let content = String(await fs.readFile(activityPath, "utf8"));
-
-  const importLines = [
+  const imports = [
     "import android.app.NotificationChannel",
     "import android.app.NotificationManager",
     "import android.content.Context",
     "import android.os.Build",
-  ];
-  if (background) {
-    importLines.push("import android.content.Intent", "import android.webkit.WebView");
-  }
-  const imports = importLines.join("\n");
+  ].join("\n");
 
-  const bodyLines = [
+  const body = [
     `    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {`,
     `      val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager`,
     `      if (mgr.getNotificationChannel("default") == null) {`,
     `        mgr.createNotificationChannel(NotificationChannel("default", ${JSON.stringify(appName)}, NotificationManager.IMPORTANCE_DEFAULT))`,
     `      }`,
     `    }`,
-  ];
-  if (background) {
-    bodyLines.push(
-      `    val visttaService = Intent(this, VisttaForegroundService::class.java)`,
-      `    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {`,
-      `      startForegroundService(visttaService)`,
-      `    } else {`,
-      `      startService(visttaService)`,
-      `    }`,
-    );
-  }
-  const body = bodyLines.join("\n");
+  ].join("\n");
 
-  const members = background
-    ? [
-        `  private var visttaWebView: WebView? = null`,
-        ``,
-        `  override fun onWebViewCreate(webView: WebView) {`,
-        `    super.onWebViewCreate(webView)`,
-        `    visttaWebView = webView`,
-        `    VisttaWebViewRegistry.set(webView)`,
-        `  }`,
-        ``,
-        `  override fun onDestroy() {`,
-        `    VisttaWebViewRegistry.clear()`,
-        `    super.onDestroy()`,
-        `  }`,
-        ``,
-        `  override fun onPause() {`,
-        `    super.onPause()`,
-        `    visttaWebView?.onResume()`,
-        `  }`,
-      ].join("\n")
-    : "";
+  // Hook that publishes the webview to VisttaService so scheduler ticks
+  // can be eval'd into JS even when the activity is paused. Public in
+  // WryActivity; safe to override.
+  //
+  // Also registers a `VisttaScheduler` JavascriptInterface so JS can
+  // start/stop timers without going through a Tauri command. The bridge
+  // is a thin wrapper that constructs Intents and calls
+  // startForegroundService — the actual work happens in VisttaService.
+  const webviewImports = ["import android.webkit.JavascriptInterface", "import android.content.Intent"].join("\n");
 
-  content = ensureBlockLines(content, ACTIVITY_IMPORTS, imports, (c, generated) =>
+  const webviewBridge = [
+    `    private val visttaSchedulerBridge = object {`,
+    `      @JavascriptInterface`,
+    `      fun registerTimer(id: String, intervalMs: Double) {`,
+    `        VisttaService.registerTimer(this@MainActivity, id, intervalMs.toLong())`,
+    `      }`,
+    ``,
+    `      @JavascriptInterface`,
+    `      fun clearTimer(id: String) {`,
+    `        VisttaService.clearTimer(this@MainActivity, id)`,
+    `      }`,
+    ``,
+    `      @JavascriptInterface`,
+    `      fun stopIfEmpty() {`,
+    `        VisttaService.stopIfEmpty(this@MainActivity)`,
+    `      }`,
+    `    }`,
+  ].join("\n");
+
+  const webviewBody = [
+    `  override fun onWebViewCreate(webView: android.webkit.WebView) {`,
+    `    super.onWebViewCreate(webView)`,
+    `    val rw = webView as RustWebView`,
+    `    VisttaService.attachWebView(rw)`,
+    `    rw.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")`,
+    `  }`,
+  ].join("\n");
+
+  // Combine imports — the existing import marker is replaced wholesale
+  // when the activity is patched (we control the full block). We add
+  // our webview imports to the existing notification-channel imports.
+  const combinedImports = `${imports}\n${webviewImports}`;
+
+  let content = String(await fs.readFile(activityPath, "utf8"));
+  content = ensureBlockLines(content, ACTIVITY_IMPORTS, combinedImports, (c, generated) =>
     c.replace(/(import\s+[^\n]+\n)/, `$1${generated}\n`),
   );
   content = ensureBlockLines(content, ACTIVITY, body, (c, generated) =>
     c.replace(/(super\.onCreate\(savedInstanceState\)\s*\n)/, `$1${generated}\n`),
   );
-  if (background || new RegExp(escapeRe(ACTIVITY_MEMBERS.begin)).test(content)) {
-    content = ensureBlockLines(content, ACTIVITY_MEMBERS, members, (c, generated) => {
-      const idx = c.lastIndexOf("}");
-      if (idx === -1) return `${c}\n${generated}\n`;
-      return `${c.slice(0, idx)}${generated}\n${c.slice(idx)}`;
-    });
-  }
-
-  // No-op tick body (kept as a hook in case future alarm-side code wants to
-  // verify the activity is alive). Idempotent: the marker is created only when
-  // background is on.
-  if (background) {
-    content = ensureBlockLines(content, ACTIVITY_TICK, "", (c, generated) =>
-      c.replace(/(super\.onCreate\(savedInstanceState\)\s*\n)/, `$1${generated}\n`),
-    );
-  } else {
-    const re = new RegExp(`\\n?${escapeRe(ACTIVITY_TICK.begin)}[\\s\\S]*?${escapeRe(ACTIVITY_TICK.end)}`);
-    content = content.replace(re, "");
-  }
+  // Insert the bridge object as a class-level field, immediately after
+  // the existing class opener. The webview override goes at the end
+  // (same place as before).
+  content = ensureBlockLines(content, ACTIVITY_WEBVIEW_BRIDGE, webviewBridge, (c, generated) =>
+    c.replace(/(class\s+MainActivity[^{]*\{\s*\n)/, `$1${generated}\n`),
+  );
+  content = ensureBlockLines(content, ACTIVITY_WEBVIEW, webviewBody, (c, generated) =>
+    c.replace(/(\n}\s*)$/, `\n${generated}\n$1`),
+  );
 
   await writeIfChanged(activityPath, content);
 }
 
 /**
- * Generates (or removes) `VisttaForegroundService.kt`. The service keeps the
- * app's process resident while backgrounded by running as a foreground service
- * and holding a partial wake lock. It posts a minimal-importance ongoing
- * notification (mandatory for foreground services). Only emitted when
- * `app.background` is set; otherwise a previously-generated file is deleted.
+ * Writes `VisttaService.kt` in full. The runtime owns this class end-to-end;
+ * the activity calls `VisttaService.attachWebView(...)` from `onWebViewCreate`
+ * so the service can `evalScript(...)` ticks into JS even when the activity
+ * is paused but the process is still alive (the foreground service keeps
+ * the process + webview alive when the user backgrounds the app).
+ *
+ * Public surface used by JS via custom Tauri commands (or directly from
+ * a synthesized plugin class if/when we add one):
+ *
+ *   startForegroundService(context)   — bring the service up; required
+ *                                       before any timer can tick.
+ *   registerTimer(id, intervalMs)     — schedule a recurring tick for
+ *                                       `id` every `intervalMs` ms.
+ *   clearTimer(id)                    — cancel a single timer.
+ *   stopService()                     — stop the service if no timers
+ *                                       are active.
+ *
+ * The service is the only place that holds the `RustWebView` reference
+ * (weak, to avoid leaking the webview through service lifecycle). When
+ * the last timer is cleared the service calls `stopSelf()` so no
+ * notification remains.
  */
-export async function patchForegroundService(targetDir, config) {
-  const appId = config?.app?.id || "org.vistta.app";
-  const appName = config?.app?.name || "Vistta App";
-  const background = !!config?.app?.background;
+export async function patchVisttaService(targetDir, config) {
+  const appId = resolveAppId(config);
   const packagePath = appId.replace(/\./g, "/");
-  const servicePath = fs.resolve(
-    targetDir,
-    "gen",
-    "android",
-    "app",
-    "src",
-    "main",
-    "java",
-    packagePath,
-    "VisttaForegroundService.kt",
-  );
-
-  if (!background) {
-    if (fs.existsSync(servicePath)) await fs.rm(servicePath);
-    return;
-  }
-
+  const servicePath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "java", packagePath, "VisttaService.kt");
+  await fs.mkdir(fs.dirname(servicePath), { recursive: true });
+  const appName = config?.app?.name || "Vistta App";
   const content = `// Generated by @vistta/js-runtime. Do not edit by hand.
 package ${appId}
 
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
-import android.os.PowerManager
-import android.os.SystemClock
-import android.util.Log
+import android.os.Looper
 import androidx.core.app.NotificationCompat
+import java.lang.ref.WeakReference
 
-class VisttaForegroundService : Service() {
-    private var wakeLock: PowerManager.WakeLock? = null
+/**
+ * Foreground service that holds the process + webview alive so that
+ * setBackgroundInterval callbacks continue to fire when the user
+ * backgrounds the app, locks the device, or switches to another app.
+ *
+ * Started by JS via @vistta/js-runtime/scheduler when the first timer
+ * is registered. Stops itself when the last timer is cleared.
+ *
+ * Ticks are delivered by [evalScript] into the webview, which fires a
+ * 'scheduler-tick' CustomEvent on window. The runtime's scheduler.js
+ * listener dispatches to the right callback.
+ */
+class VisttaService : Service() {
+    companion object {
+        private const val NOTIF_CHANNEL_ID = "vistta_scheduler"
+        private const val NOTIF_ID = 1001
+        private const val ACTION_REGISTER = "vistta.REGISTER_TIMER"
+        private const val ACTION_CLEAR = "vistta.CLEAR_TIMER"
+        private const val ACTION_STOP_IF_EMPTY = "vistta.STOP_IF_EMPTY"
+        const val EXTRA_ID = "id"
+        const val EXTRA_INTERVAL_MS = "intervalMs"
+
+        @Volatile
+        private var webViewRef: WeakReference<RustWebView>? = null
+
+        @Volatile
+        private var instance: VisttaService? = null
+
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private val timers = mutableMapOf<String, Runnable>()
+        private var evalIdCounter = 0
+
+        fun attachWebView(webView: RustWebView) {
+            webViewRef = WeakReference(webView)
+        }
+
+        fun registerTimer(context: Context, id: String, intervalMs: Long) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_REGISTER)
+                .putExtra(EXTRA_ID, id)
+                .putExtra(EXTRA_INTERVAL_MS, intervalMs)
+            context.startForegroundService(intent)
+        }
+
+        fun clearTimer(context: Context, id: String) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_CLEAR)
+                .putExtra(EXTRA_ID, id)
+            context.startService(intent)
+        }
+
+        fun stopIfEmpty(context: Context) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_STOP_IF_EMPTY)
+            context.startService(intent)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        scheduleTickAlarm(this)
+        instance = this
+        ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (mgr.getNotificationChannel(CHANNEL_ID) == null) {
-                val channel = NotificationChannel(CHANNEL_ID, "Background", NotificationManager.IMPORTANCE_MIN)
-                channel.setShowBadge(false)
-                mgr.createNotificationChannel(channel)
+        startForegroundCompat()
+        when (intent?.action) {
+            ACTION_REGISTER -> {
+                val id = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
+                val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 60_000L)
+                scheduleTimer(id, intervalMs)
+            }
+            ACTION_CLEAR -> {
+                val id = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
+                cancelTimer(id)
+                if (timers.isEmpty()) stopSelf()
+            }
+            ACTION_STOP_IF_EMPTY -> {
+                if (timers.isEmpty()) stopSelf()
             }
         }
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(${JSON.stringify(appName)})
-            .setContentText("Running in background")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .build()
-        startForeground(NOTIFICATION_ID, notification)
-
-        if (wakeLock == null) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vistta::background")
-            wakeLock?.acquire()
-        }
-        scheduleTickAlarm(this)
         return START_STICKY
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-    }
-
-    companion object {
-        private const val CHANNEL_ID = "vistta_background"
-        private const val NOTIFICATION_ID = 1
-        internal const val TICK_INTERVAL_MS = 60L * 1000L
-
-        internal fun scheduleTickAlarm(context: Context) {
-            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val pi = PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(context, VisttaAlarmReceiver::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            val triggerAt = SystemClock.elapsedRealtime() + TICK_INTERVAL_MS
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
-                } else {
-                    am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
-                }
-                Log.d("VisttaBg", "tick alarm scheduled in \${TICK_INTERVAL_MS}ms")
-            } catch (se: SecurityException) {
-                Log.w("VisttaBg", "tick alarm scheduling denied: \${se.message}")
+    private fun scheduleTimer(id: String, intervalMs: Long) {
+        timers[id]?.let { mainHandler.removeCallbacks(it) }
+        val runnable = object : Runnable {
+            override fun run() {
+                fireTick(id)
+                mainHandler.postDelayed(this, intervalMs)
             }
         }
+        timers[id] = runnable
+        mainHandler.postDelayed(runnable, intervalMs)
+    }
+
+    private fun cancelTimer(id: String) {
+        timers.remove(id)?.let { mainHandler.removeCallbacks(it) }
+    }
+
+    private fun fireTick(id: String) {
+        val webView = webViewRef?.get() ?: return
+        val evalId = ++evalIdCounter
+        // The id is a base-36 monotonically increasing counter generated
+        // in the JS scheduler wrapper. By construction it contains only
+        // [0-9a-z] and is safe to embed in the JS string literal below
+        // without escaping. If a future caller passes an arbitrary id
+        // (e.g. a user-supplied timer name), it MUST be validated or
+        // escaped first.
+        val js = "window.dispatchEvent(new CustomEvent('scheduler-tick', { detail: { id: '" + id + "' } }))"
+        webView.evalScript(evalId, js)
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val mgr = getSystemService(NotificationManager::class.java)
+            if (mgr.getNotificationChannel(NOTIF_CHANNEL_ID) == null) {
+                val channel = NotificationChannel(
+                    NOTIF_CHANNEL_ID,
+                    "Background sync",
+                    NotificationManager.IMPORTANCE_LOW,
+                ).apply { setShowBadge(false) }
+                mgr.createNotificationChannel(channel)
+            }
+        }
+    }
+
+    private fun startForegroundCompat() {
+        val notif = NotificationCompat.Builder(this, NOTIF_CHANNEL_ID)
+            .setContentTitle(${JSON.stringify(appName)})
+            .setContentText("Background sync active")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
+    }
+
+    override fun onDestroy() {
+        timers.values.forEach { mainHandler.removeCallbacks(it) }
+        timers.clear()
+        webViewRef = null
+        instance = null
+        super.onDestroy()
     }
 }
 `;
@@ -386,187 +463,9 @@ class VisttaForegroundService : Service() {
 }
 
 /**
- * Writes the shared `VisttaWebViewRegistry.kt` so the alarm receiver can
- * reach the WebView across activity lifecycles. The registry holds a single
- * weak reference that the activity sets in `onWebViewCreate` and clears in
- * `onDestroy`. Without it the alarm fires into a black hole because the
- * receiver is constructed in a separate Android object lifecycle from the
- * activity. The file is generated alongside the service when background is
- * on; otherwise it's deleted.
- */
-export async function patchAlarmReceiver(targetDir, config) {
-  const appId = config?.app?.id || "org.vistta.app";
-  const background = !!config?.app?.background;
-  const packagePath = appId.replace(/\./g, "/");
-  const dir = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "java", packagePath);
-  const registryPath = fs.resolve(dir, "VisttaWebViewRegistry.kt");
-  const receiverPath = fs.resolve(dir, "VisttaAlarmReceiver.kt");
-
-  if (!background) {
-    if (fs.existsSync(registryPath)) await fs.rm(registryPath);
-    if (fs.existsSync(receiverPath)) await fs.rm(receiverPath);
-    return;
-  }
-
-  const registry = `// Generated by @vistta/js-runtime. Do not edit by hand.
-package ${appId}
-
-import android.webkit.WebView
-import java.lang.ref.WeakReference
-
-object VisttaWebViewRegistry {
-    private var ref: WeakReference<WebView>? = null
-
-    fun set(webView: WebView) {
-        ref = WeakReference(webView)
-    }
-
-    fun clear() {
-        ref = null
-    }
-
-    fun get(): WebView? = ref?.get()
-}
-`;
-  await writeIfChanged(registryPath, registry);
-
-  const receiver = `// Generated by @vistta/js-runtime. Do not edit by hand.
-package ${appId}
-
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import android.webkit.WebView
-
-class VisttaAlarmReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent?) {
-        val webView = VisttaWebViewRegistry.get()
-        if (webView == null) {
-            Log.d("VisttaBg", "tick fired but no WebView registered; skipping")
-            VisttaForegroundService.scheduleTickAlarm(context)
-            return
-        }
-        val main = Handler(Looper.getMainLooper())
-        main.post {
-            try {
-                webView.resumeTimers()
-                webView.evaluateJavascript("1", null)
-            } catch (t: Throwable) {
-                Log.w("VisttaBg", "tick evaluateJavascript failed: \${t.message}")
-            }
-        }
-        VisttaForegroundService.scheduleTickAlarm(context)
-    }
-}
-`;
-  await writeIfChanged(receiverPath, receiver);
-}
-
-/**
- * Wires the auto-generated keystore into Gradle so the `release` buildType
- * produces a signed APK. Follows the Tauri 2 Android signing guide:
- * https://v2.tauri.app/distribute/sign/android/
- *
- * Two artefacts are written:
- *   1. `<buildDir>/gen/android/keystore.properties` — plain-text credential
- *      file referenced by the gradle config below.
- *   2. `<buildDir>/gen/android/app/build.gradle.kts` — three idempotent
- *      marker-delimited injections:
- *        a. extra imports (`java.util.Properties`, `java.io.FileInputStream`)
- *        b. a `signingConfigs { create("release") { ... } }` block before
- *           `buildTypes`, reading credentials from `keystore.properties`
- *        c. a `signingConfig = signingConfigs.getByName("release")` line
- *           inside `getByName("release") { ... }`
- *
- * `credentials` is the object stashed on `config.__androidKeystore` by
- * `ensureAndroidKeystore()` in index.js. If it's missing the patch is a
- * no-op (build will produce an unsigned APK, matching the original
- * behaviour).
- */
-export async function patchAndroidSigning(targetDir, config) {
-  const credentials = config?.__androidKeystore;
-  if (!credentials) return;
-  const { keystorePath, alias, storePassword } = credentials;
-  const keystoreRel = fs.relative(fs.resolve(targetDir, "gen", "android", "app"), keystorePath);
-  const propsPath = fs.resolve(targetDir, "gen", "android", "keystore.properties");
-  const propsContent =
-    [
-      `# Auto-generated by @vistta/js-runtime. Do not edit by hand.`,
-      `# Re-running a build reuses the same keystore (see .credentials beside it).`,
-      `password=${storePassword}`,
-      `keyAlias=${alias}`,
-      `storeFile=${keystoreRel.replace(/\\/g, "/")}`,
-    ].join("\n") + "\n";
-  await fs.mkdir(fs.dirname(propsPath), { recursive: true });
-  await fs.writeFile(propsPath, propsContent);
-
-  const gradlePath = fs.resolve(targetDir, "gen", "android", "app", "build.gradle.kts");
-  if (!fs.existsSync(gradlePath)) return;
-  let content = String(await fs.readFile(gradlePath, "utf8"));
-
-  content = stripOutsideMarkers(content, SIGNING_IMPORTS, /^[ \t]*import\s+java\.util\.Properties\s*\r?\n/gm);
-  content = stripOutsideMarkers(content, SIGNING_IMPORTS, /^[ \t]*import\s+java\.io\.FileInputStream\s*\r?\n/gm);
-  const hasProps = /^\s*import\s+java\.util\.Properties\s*$/m.test(content);
-  const hasFIS = /^\s*import\s+java\.io\.FileInputStream\s*$/m.test(content);
-  const linesToAdd = [];
-  if (!hasProps) linesToAdd.push("import java.util.Properties");
-  if (!hasFIS) linesToAdd.push("import java.io.FileInputStream");
-  if (linesToAdd.length) {
-    const imports = linesToAdd.join("\n");
-    content = ensureBlockLines(content, SIGNING_IMPORTS, imports, (c, generated) => {
-      const matches = [...c.matchAll(/^import\s+[^\n]+\n/gm)];
-      const last = matches[matches.length - 1];
-      if (!last) return `${generated}\n${c}`;
-      const insertAt = last.index + last[0].length;
-      return c.slice(0, insertAt) + `\n${generated}` + c.slice(insertAt);
-    });
-  } else if (!new RegExp(escapeRe(SIGNING_IMPORTS.begin)).test(content)) {
-    const presentImports = [];
-    if (hasProps) presentImports.push("import java.util.Properties");
-    if (hasFIS) presentImports.push("import java.io.FileInputStream");
-    content = ensureBlockLines(content, SIGNING_IMPORTS, presentImports.join("\n"), (c, generated) => {
-      const matches = [...c.matchAll(/^import\s+[^\n]+\n/gm)];
-      const last = matches[matches.length - 1];
-      if (!last) return `${generated}\n${c}`;
-      const insertAt = last.index + last[0].length;
-      return c.slice(0, insertAt) + `\n${generated}` + c.slice(insertAt);
-    });
-  }
-
-  const signingConfigsBlock = `signingConfigs {
-    create("release") {
-        val keystorePropertiesFile = rootProject.file("keystore.properties")
-        val keystoreProperties = Properties()
-        if (keystorePropertiesFile.exists()) {
-            keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-        }
-        keyAlias = keystoreProperties["keyAlias"] as String
-        keyPassword = keystoreProperties["password"] as String
-        storeFile = file(keystoreProperties["storeFile"] as String)
-        storePassword = keystoreProperties["password"] as String
-    }
-}`;
-  content = ensureBlockLines(content, SIGNING_CONFIGS, signingConfigsBlock, (c, generated) =>
-    c.replace(/(\n\s*buildTypes\s*\{)/, `\n${generated}\n$1`),
-  );
-
-  const indent = "        ";
-  const signingRef = `${indent}signingConfig = signingConfigs.getByName("release")`;
-  content = ensureBlockLines(content, SIGNING_REFERENCE, signingRef, (c, generated) => {
-    // Place inside `getByName("release") { ... }` — first line after the opening brace.
-    return c.replace(/(getByName\("release"\)\s*\{\s*\n)/, `$1${generated}\n`);
-  });
-
-  await writeIfChanged(gradlePath, content);
-}
-
-/**
  * Idempotently inserts/updates a marker-delimited block in `content`.
- * If the markers are absent, `insertFallback(content, generatedBlock)` is invoked
- * once to place the block; subsequent runs re-use the markers.
+ * If the markers are absent, `insertFallback(content, generatedBlock)` is
+ * invoked once to place the block; subsequent runs re-use the markers.
  */
 function ensureBlock(content, marker, body, insertFallback) {
   const generated = body ? `${marker.begin}\n${body}\n${marker.end}` : `${marker.begin}\n${marker.end}`;
@@ -575,7 +474,7 @@ function ensureBlock(content, marker, body, insertFallback) {
   return insertFallback(content, generated);
 }
 
-// Same as ensureBlock but uses `//`-style line markers (suitable for Kotlin/JS).
+// Same as ensureBlock but uses `//`-style line markers (suitable for Kotlin).
 function ensureBlockLines(content, marker, body, insertFallback) {
   const generated = body ? `${marker.begin}\n${body}\n${marker.end}` : `${marker.begin}\n${marker.end}`;
   const re = new RegExp(`${escapeRe(marker.begin)}[\\s\\S]*?${escapeRe(marker.end)}`);
@@ -585,18 +484,4 @@ function ensureBlockLines(content, marker, body, insertFallback) {
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Removes every match of `pattern` from `content` that lies OUTSIDE the marker
- * block delimited by `marker.begin` / `marker.end`. Lines inside the marker
- * block are preserved verbatim (they're owned by `ensureBlockLines`).
- */
-function stripOutsideMarkers(content, marker, pattern) {
-  const re = new RegExp(`${escapeRe(marker.begin)}[\\s\\S]*?${escapeRe(marker.end)}`);
-  const match = re.exec(content);
-  if (!match) return content.replace(pattern, "");
-  const before = content.slice(0, match.index).replace(pattern, "");
-  const after = content.slice(match.index + match[0].length).replace(pattern, "");
-  return before + match[0] + after;
 }

@@ -1,33 +1,23 @@
 [package]
-name = "vistta-js-example"
-version = "0.1.0"
-description = "Vistta.js Example"
-authors = ["unkown"]
+name = "app"
+version = "0.0.0"
+description = "A Tauri App"
+authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "vistta_js_example"
+name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# vistta:plugins:begin
-tauri = { version = "2", features = ["devtools"] }
-# vistta:plugins:end
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 log = "0.4"
-env_logger = "0.11"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Win32_UI_Shell"] }
-
-[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-# vistta:plugins-mobile:begin
-# vistta:plugins-mobile:end
+tauri = { version = "2", features = [] }
+tauri-plugin-log = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-# vistta:plugins-desktop:begin
-# vistta:plugins-desktop:end
+tauri-plugin-single-instance = "2"
