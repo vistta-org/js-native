@@ -4,12 +4,14 @@ import {
   mergeConfig,
   patchAndroidManifest,
   patchAndroidStrings,
+  patchAppGradle,
   patchBuildTask,
   patchCapabilities,
   patchCargoToml,
   patchLibRs,
   patchMainActivity,
   patchMainRs,
+  patchVisttaNetwork,
   patchVisttaService,
 } from "./patches/index.js";
 import { exec, generateIcons, getInfo, platform, resolveAppId } from "./utils/index.js";
@@ -42,7 +44,6 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
  * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
- * @param {(message: string, isError: boolean) => void} [onOutput] - Receives stdout/stderr lines from `tauri`. When provided, child stdio is piped; otherwise it's inherited.
  * @property {Object} [signing] - Platform code-signing settings. Windows + macOS settings are forwarded to `tauri.conf.json` bundle config; Android signing is currently opt-in (set `signing.android` to provide a pre-existing keystore) and the runtime does not auto-generate a keystore.
  */
 
@@ -135,11 +136,10 @@ export async function build(config) {
     const m = line.match(/Finished\s+\d+\s+\S+\s+at:\s*(.+)$/i);
     if (m) artifacts.push(m[1].trim());
   };
-  const onLine = (msg, isError) => {
+  const onLine = (msg) => {
     for (const line of String(msg).replace(/\r\n/g, "\n").split("\n")) {
       if (!line) continue;
       collectLine(line);
-      if (config.onOutput) config.onOutput(line + "\n", isError);
     }
   };
 
@@ -150,6 +150,8 @@ export async function build(config) {
       await patchBuildTask(cwd, config);
       await patchAndroidManifest(cwd, config);
       await patchAndroidStrings(cwd, config);
+      await patchAppGradle(cwd);
+      await patchVisttaNetwork(cwd, config);
       await patchMainActivity(cwd, config);
       await patchVisttaService(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
@@ -290,7 +292,7 @@ function adb(args, options) {
 /**
  * Spawns `npx tauri <args>` and waits for completion.
  *
- * The mode handling (tee-to-TTY + dispatch when an `onLine`/`onOutput`
+ * The mode handling (tee-to-TTY + dispatch when an `onLine`
  * callback is present, inherit-stdio fast path otherwise) lives in `exec()`
  * so every spawned command — adb, the desktop binary, this one — gets the
  * same treatment. This wrapper is now just a thin convenience for the

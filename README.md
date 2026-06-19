@@ -134,10 +134,6 @@ await Tauri.build({
       entitlements: "./entitlements.plist",
     },
   },
-
-  // Stream tauri stdout/stderr line-by-line (replaces inherited stdio).
-  onOutput: (msg, isError) => console[isError ? "error" : "log"](msg),
-
   // Dev-only: pass through a custom dev server URL (otherwise frontendDist is used).
   devUrl: "http://localhost:5173",
 });
@@ -322,6 +318,37 @@ sub-hour polling, keep-alive pings, and "I just need this to keep
 firing while the user has me in their pocket." Use Android's native
 `WorkManager` (or Tauri's notification plugin scheduled via a
 `tauri-plugin-notification` schedule) for true time-of-day reminders.
+
+#### Background `fetch` override (Android)
+
+On Android, `window.fetch` is monkey-patched while a scheduler-tick
+callback is running. Any `fetch` issued from inside the callback is
+forwarded to the `VisttaService` foreground service, which performs the
+HTTP request on a service-owned thread and delivers the result back
+into the webview via `evalScript`. Outside of tick callbacks, `fetch`
+uses the WebView's normal network stack.
+
+The override is what makes background polling work: while the activity
+is paused, the WebView's own network stack stops completing responses,
+so a `fetch` started from JS would hang. The service has its own
+network stack that is not bound to the activity lifecycle.
+
+The override is transparent to consumers — code that does
+`fetch(url)` or `request.get(...)` inside a tick callback Just Works on
+Android. Limitations to be aware of:
+
+- **Request bodies**: `string`, `ArrayBuffer`, and typed arrays are
+  supported. `Blob` and `FormData` are rejected (the bridge has no
+  streaming-read path for them).
+- **Streaming responses**: not supported. The service buffers the full
+  response before delivering. Use non-streaming fetches.
+- **Cancellation**: `AbortSignal` is honored. Aborting the signal calls
+  `VisttaService.abortFetch(id)` and rejects the promise with
+  `DOMException("Aborted", "AbortError")`.
+- **Auth / CORS**: not affected. The service performs a plain HTTP
+  request, so CORS does not apply (this is the OS's `HttpURLConnection`,
+  not a browser fetch). Auth headers from the original request are
+  forwarded.
 
 ## Platform Detection
 

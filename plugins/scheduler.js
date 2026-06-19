@@ -2,34 +2,36 @@
  * Cross-platform background scheduler API.
  *
  * Platform behavior:
- * - **Android**: Callbacks fire via foreground service, even when app is backgrounded or device is locked.
- * - **Desktop/Web**: Falls through to setInterval/setTimeout with no background persistence.
- * - **iOS**: Falls through to setInterval/setTimeout (background persistence via native API not yet implemented).
+ * - **Android**: Callbacks fire via a foreground service, so they keep
+ *   firing when the app is backgrounded or the device is locked.
+ *   While a callback is running, `window.fetch` is transparently
+ *   routed to the service so network requests complete too.
+ * - **Desktop/Web**: Falls through to `setInterval` / `setTimeout` with
+ *   no background persistence.
+ * - **iOS**: Falls through to `setInterval` / `setTimeout` (background
+ *   persistence via native API not yet implemented).
  *
- * All platforms expose the same API so callers don't need to branch on environment.
- * Timer IDs are normalized to strings internally for consistent bridge communication.
+ * Timer IDs are normalised to strings internally.
  */
 
 let nextId = 0;
 /** @type {Map<string, () => void>} */
 const callbacks = new Map();
-let listenerInstalled = false;
-/** @type {null | false | Object} */
-let bridge = null;
+/** Active bridge-poll probes, keyed by scheduler id. Each entry holds
+ *  the native setInterval handle used to poll for the bridge, so
+ *  `clearBackgroundInterval` can cancel the poll if the caller changes
+ *  their mind before the bridge appears. */
+const pendingPolls = new Map();
+let listener = null;
+/** @type {false | Object} */
+let bridge = false;
 
 /**
  * Schedules `fn` to fire every `intervalMs` milliseconds.
  *
- * **Android**: Timer persists in background via foreground service. Service auto-starts
- * on first call and stops when no timers remain.
- *
- * **Desktop/Web/iOS**: Falls through to `setInterval` with standard browser semantics
- * (no background persistence).
- *
  * @param {() => void} fn - Callback to invoke on each tick.
  * @param {number} intervalMs - Interval in milliseconds (minimum 1ms).
  * @returns {string} Timer ID suitable for `clearBackgroundInterval`.
- * @throws {TypeError} If fn is not a function or intervalMs is not a valid number.
  */
 export function setBackgroundInterval(fn, intervalMs) {
   if (typeof fn !== "function") throw new TypeError("fn must be a function");
@@ -37,22 +39,34 @@ export function setBackgroundInterval(fn, intervalMs) {
     throw new TypeError("intervalMs must be a number >= 1");
   }
 
-  installListener();
+  setupListener();
   const id = (++nextId).toString(36);
   callbacks.set(id, fn);
+
   const b = getBridge();
-  // If no bridge is available use setInterval on desktop/web/iOS as fallback
-  if (b) b.registerTimer(id, intervalMs);
-  else setInterval(fn, intervalMs);
+  if (b) {
+    b.registerTimer(id, intervalMs);
+  } else if (isMobile()) {
+    // Bridge not yet injected by the activity. Poll until it appears,
+    // then hand the timer off to the service. Plain `setInterval` would
+    // be paused by Android when the app is backgrounded.
+    const probe = setInterval(() => {
+      const bb = getBridge();
+      if (!bb) return;
+      clearInterval(probe);
+      pendingPolls.delete(id);
+      bb.registerTimer(id, intervalMs);
+    }, 1000);
+    pendingPolls.set(id, probe);
+  } else {
+    setInterval(fn, intervalMs);
+  }
   return id;
 }
 
 /**
- * Cancels a timer registered with `setBackgroundInterval` or `setBackgroundTimeout`.
- *
- * On Android, also checks if service should be stopped (no remaining timers).
- *
- * @param {string | number} id - Timer ID from setBackgroundInterval/setBackgroundTimeout.
+ * Cancels a timer registered with `setBackgroundInterval` or
+ * `setBackgroundTimeout`.
  */
 export function clearBackgroundInterval(id) {
   if (id == null) return;
@@ -62,30 +76,28 @@ export function clearBackgroundInterval(id) {
   if (b) {
     b.clearTimer(idStr);
     b.stopIfEmpty();
-  } else {
-    // Attempt to clear as native timer ID (for fallback on desktop/web/iOS)
-    try {
-      clearInterval(parseInt(idStr, 10));
-    } catch {
-      // Ignore if id is not a valid native timer
-    }
+    return;
+  }
+  const probe = pendingPolls.get(idStr);
+  if (probe !== undefined) {
+    clearInterval(probe);
+    pendingPolls.delete(idStr);
+    return;
+  }
+  // Fallback: try to clear as a native timer id (desktop/web/iOS path).
+  try {
+    clearInterval(parseInt(idStr, 10));
+  } catch {
+    /* ignore */
   }
 }
 
 /**
  * Schedules `fn` to fire once after `delayMs` milliseconds.
  *
- * **Android**: One-shot timer with background persistence via foreground service.
- *
- * **Desktop/Web/iOS**: Falls through to `setTimeout` for best timing accuracy.
- *
- * Implemented internally as a one-shot timer using the interval machinery:
- * a single registration that fires once and auto-cancels.
- *
  * @param {() => void} fn - Callback to invoke once.
  * @param {number} delayMs - Delay in milliseconds (minimum 1ms).
  * @returns {string} Timer ID suitable for `clearBackgroundTimeout`.
- * @throws {TypeError} If fn is not a function or delayMs is not a valid number.
  */
 export function setBackgroundTimeout(fn, delayMs) {
   if (typeof fn !== "function") throw new TypeError("fn must be a function");
@@ -94,14 +106,66 @@ export function setBackgroundTimeout(fn, delayMs) {
   }
 
   const b = getBridge();
-  // Desktop/Web/iOS: use native setTimeout for best accuracy
-  if (!b) return String(setTimeout(fn, delayMs));
+  if (b) return registerTimeout(fn, delayMs, b);
+  if (isMobile()) {
+    const id = (++nextId).toString(36);
+    let fired = false;
+    callbacks.set(id, () => {
+      if (fired) return;
+      fired = true;
+      try {
+        fn();
+      } finally {
+        clearBackgroundInterval(id);
+      }
+    });
+    const probe = setInterval(() => {
+      const bb = getBridge();
+      if (!bb) return;
+      clearInterval(probe);
+      pendingPolls.delete(id);
+      bb.registerTimer(id, Math.max(1, delayMs));
+    }, 1000);
+    pendingPolls.set(id, probe);
+    return id;
+  }
+  return String(setTimeout(fn, delayMs));
+}
 
-  // Android: implement timeout as a self-canceling interval
-  installListener();
+/**
+ * Cancels a timer registered with `setBackgroundTimeout`.
+ */
+export function clearBackgroundTimeout(id) {
+  clearBackgroundInterval(id);
+}
+
+// --- Internals ---
+
+function isMobile() {
+  return typeof window !== "undefined" && window.platform === "mobile";
+}
+
+/**
+ * Returns the VisttaScheduler bridge if available, else `false`. Positive
+ * results are cached; `false` is re-checked on every call so we pick up
+ * the bridge as soon as the activity injects it.
+ */
+function getBridge() {
+  if (bridge) return bridge;
+  if (typeof window === "undefined") return false;
+  const b = /** @type {any} */ (window).VisttaScheduler;
+  if (b) {
+    bridge = b;
+    return bridge;
+  }
+  return false;
+}
+
+function registerTimeout(fn, delayMs, b) {
+  setupListener();
   const id = (++nextId).toString(36);
   let fired = false;
-  const wrapped = () => {
+  callbacks.set(id, () => {
     if (fired) return;
     fired = true;
     try {
@@ -109,44 +173,24 @@ export function setBackgroundTimeout(fn, delayMs) {
     } finally {
       clearBackgroundInterval(id);
     }
-  };
-  callbacks.set(id, wrapped);
+  });
   b.registerTimer(id, Math.max(1, delayMs));
   return id;
 }
 
 /**
- * Cancels a timer registered with `setBackgroundTimeout`.
- *
- * @param {string | number} id - Timer ID from setBackgroundTimeout.
+ * Installs the 'scheduler-tick' event listener once. The listener
+ * increments the depth counter, runs the callback, then decrements the
+ * counter on the next macrotask (so microtask continuations of code
+ * called from the tick still see the fetch override active).
  */
-export function clearBackgroundTimeout(id) {
-  clearBackgroundInterval(id);
-}
-
-/**
- * Gets the Android VisttaScheduler bridge if available (null = not yet checked, false = unavailable).
- * @returns {null | false | Object} The bridge object or false if unavailable.
- */
-function getBridge() {
-  if (bridge !== null) return bridge;
-  bridge = (typeof window !== "undefined" && /** @type {any} */ (window).VisttaScheduler) || false;
-  return bridge;
-}
-
-/**
- * Installs the 'scheduler-tick' event listener on window if not already installed.
- * Listener is only needed on Android but safe to install on all platforms.
- */
-function installListener() {
-  if (listenerInstalled || typeof window === "undefined") return;
-  /** @type {(event: CustomEvent) => void} */
-  const handleTick = (event) => {
+function setupListener() {
+  if (listener || typeof window === "undefined") return;
+  listener = async (event) => {
     const id = event?.detail?.id;
     if (id == null) return;
     const cb = callbacks.get(id);
     if (cb) cb();
   };
-  window.addEventListener("scheduler-tick", handleTick);
-  listenerInstalled = true;
+  window.addEventListener("scheduler-tick", listener);
 }

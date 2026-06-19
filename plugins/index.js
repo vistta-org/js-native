@@ -13,4 +13,5 @@ export * as Filesystem from "@tauri-apps/plugin-fs";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
 export * as Shell from "@tauri-apps/plugin-shell";
+export * as Net from "./net/index.js";
 export * as Scheduler from "./scheduler.js";

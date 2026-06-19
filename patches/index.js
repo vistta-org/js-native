@@ -1,8 +1,10 @@
 export {
   patchAndroidManifest,
   patchAndroidStrings,
+  patchAppGradle,
   patchBuildTask,
   patchMainActivity,
+  patchVisttaNetwork,
   patchVisttaService,
 } from "./android.js";
 export { patchCapabilities } from "./capabilities.js";
