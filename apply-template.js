@@ -1,7 +1,7 @@
 import fs from "@vistta/fs";
 
 /**
- * Copies `template/` (a verbatim `tauri init` baseline at the pinned
+ * Copies `rust/` (a verbatim `tauri init` baseline at the pinned
  * Tauri version) into `buildDir`. The runtime's patch functions then
  * overwrite the files they own (Cargo.toml, src/lib.rs, src/main.rs,
  * tauri.conf.json, capabilities/default.json) in full; build.rs and
@@ -13,7 +13,7 @@ import fs from "@vistta/fs";
  *
  * @param {object} args
  * @param {string} args.buildDir - Destination directory (created if missing).
- * @param {string} args.tplDir - The package's `template/` directory.
+ * @param {string} args.tplDir - The package's `rust/` directory.
  */
 export async function applyTemplate({ buildDir, tplDir }) {
   await fs.mkdir(buildDir, { recursive: true });

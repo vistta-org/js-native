@@ -24,10 +24,12 @@ export async function getInfo(config) {
   const author = typeof pkg.author === "object" ? pkg.author?.name || "unknown" : pkg.author || "unknown";
   // The Cargo package name drives the binary artifact name on disk
   // (target/debug/<name>.exe, etc.), so this must match [package].name
-  // written by patchCargoToml. Cargo identifiers forbid dots, so any dev
-  // suffix uses a dash (see crateNameSuffix).
+  // written by patchCargoToml. The crate name is mode-stable (no dev
+  // suffix) so Cargo's incremental build cache isn't invalidated when
+  // switching between dev and release. Cargo's own target/debug/ vs
+  // target/release/ split keeps the dev and release binaries separate.
   return {
-    name: slug + crateNameSuffix(),
+    name: slug,
     version: pkg.version || "0.1.0",
     description: pkg.description || pkg.name || "",
     author,
@@ -36,14 +38,32 @@ export async function getInfo(config) {
 }
 
 /**
- * Returns the app ID the build is actually targeting. In development (NODE_ENV=development)
- * a `.dev` suffix is appended so the resulting APK installs side-by-side with the
- * release build. Every patch and the build switch itself call this so the source
- * layout under `gen/android/app/src/main/java/<id>/...` always matches the
- * identifier Tauri just generated.
+ * Returns the base app identifier (e.g. `org.vistta.connect`). This is the
+ * value used for the Tauri `identifier` in `tauri.conf.json`, the Android
+ * `namespace`, and the Kotlin package path — all of which must stay stable
+ * across dev/release so `tauri android init`'s generated source tree doesn't
+ * drift.
+ *
+ * For the actual runtime applicationId (what `adb` installs/launches, what
+ * appears on the Windows taskbar), use `resolveApplicationId()` which
+ * appends the `.dev` suffix in development. Tauri's
+ * `bundle.android.debugApplicationIdSuffix` handles the Android
+ * applicationId suffix natively.
  */
 export function resolveAppId(config) {
-  const id = config?.app?.id || "org.vistta.app";
+  return config?.app?.id || "org.vistta.app";
+}
+
+/**
+ * Returns the actual applicationId the built app will have at runtime.
+ * In development a `.dev` suffix is appended so the resulting APK installs
+ * side-by-side with the release build. On Android this matches what Tauri
+ * produces via `bundle.android.debugApplicationIdSuffix`; on desktop it's
+ * used for the Windows AppUserModelID. Use this for `adb` commands and
+ * any runtime identifier that needs to match the installed app.
+ */
+export function resolveApplicationId(config) {
+  const id = resolveAppId(config);
   return process.env.NODE_ENV === "development" ? `${id}.dev` : id;
 }
 
@@ -61,24 +81,14 @@ export function devSuffix() {
 }
 
 /**
- * Suffix appended to machine names that Cargo accepts as a valid package
- * identifier. Cargo's `[package].name` only allows letters, digits,
- * `-`, `_`. Use `-` here, not `.`.
- */
-export function crateNameSuffix() {
-  return process.env.NODE_ENV === "development" ? "-dev" : "";
-}
-
-/**
  * Suffix appended to user-facing machine names (productName in
- * tauri.conf.json, app display name) in development builds. Tauri's
- * productName accepts dots, so `.dev` is fine. Ensures the dev install
- * has a distinct name from the release install, so both can coexist on
- * the same machine/device without overwriting each other. Single source
- * of truth — mergeConfig and patchCargoToml both read from here.
+ * tauri.conf.json, app display name) in development builds, so the dev
+ * install has a distinct name from the release install and both can
+ * coexist on the same machine/device. Single source of truth —
+ * mergeConfig and patchCargoToml both read from here.
  */
 export function nameSuffix() {
-  return process.env.NODE_ENV === "development" ? ".dev" : "";
+  return process.env.NODE_ENV === "development" ? " (Dev)" : "";
 }
 
 // Cargo crate name rules: snake_case, must start with a letter, cannot be a Rust

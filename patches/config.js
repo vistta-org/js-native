@@ -1,5 +1,5 @@
 import fs from "@vistta/fs";
-import { devSuffix, nameSuffix, resolveAppId, writeIfChanged } from "../utils/index.js";
+import { devSuffix, getInfo, nameSuffix, resolveAppId, writeIfChanged } from "../utils/index.js";
 
 /**
  * Writes `tauri.conf.json` by deep-merging the consumer config and any `extraTauriConfig`
@@ -21,12 +21,13 @@ export async function mergeConfig(targetDir, config) {
   //     title, Android launcher label) so the running app is marked.
   const name = nameSuffix();
   const dev = devSuffix();
+  const { version } = await getInfo(config);
 
   const generated = {
     $schema: "https://schema.tauri.app/config/2",
     productName: `${appName}${name}`,
     identifier: appId,
-    version: "0.1.0",
+    version,
     build: {
       beforeBuildCommand: "",
       beforeDevCommand: "",
@@ -60,6 +61,11 @@ export async function mergeConfig(targetDir, config) {
       active: true,
       targets: "all",
       icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+      // In development, Tauri appends this suffix to the Android
+      // applicationId so the dev APK installs side-by-side with the
+      // release APK. The namespace stays stable (no suffix) so the
+      // generated Kotlin source tree doesn't drift between dev/release.
+      ...(process.env.NODE_ENV === "development" ? { android: { debugApplicationIdSuffix: ".dev" } } : {}),
       ...buildSigning(config),
     },
     plugins: {

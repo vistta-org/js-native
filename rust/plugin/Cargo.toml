@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-vistta"
+version = "0.1.0"
+description = "Vistta.js runtime Android background scheduler, fetch, and socket bridge"
+edition = "2021"
+authors = ["Tiago Terenas Almeida <tiago@vistta.org>"]
+license = "Apache-2.0"
+links = "tauri-plugin-vistta"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2" }
+serde = "1"
+serde_json = "1"
+log = "0.4"

@@ -4,7 +4,7 @@ Unified runtime for building cross-platform applications (mobile, desktop, web) 
 
 ## Features
 
-- **Single codebase** for all platforms: Android, iOS, macOS, Windows, Linux, and Web
+- **Single codebase** for all platforms: Android, macOS, Windows, Linux, and Web (iOS planned)
 - **JS-only for app developers** — no Rust required; the runtime owns `src-tauri/`
 - **Built-in integrations**: Clipboard, Dialog, Filesystem, Haptics, Notification, Shell
 - **Smaller bundle than Electron** (Tauri ships a webview, not a full browser)
@@ -149,7 +149,7 @@ await Tauri.build({
 `run` and `build` return different shapes:
 
 - `run` returns an `exec` handle of `{ close, on, end }`. `run` is long-lived — keep the handle and call `handle.close()` to stop the dev process.
-- `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, the native binary for desktop). The runtime parses tauri output for `Finished ... at:` markers and falls back to well-known default paths if no markers are emitted. The promise rejects with an `Error` on non-zero exit.
+- `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, installers + native binary for desktop). The runtime parses tauri output for `Finished ... at:` markers (both single-line `Finished 1 artifact at: <path>` and multi-line `Finished N bundles at:` followed by indented paths) and falls back to well-known default paths when no markers are emitted. The promise rejects with an `Error` on non-zero exit.
 
 The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to the build output directory using a versioned name derived from `artifactName()`:
 
@@ -160,7 +160,8 @@ const { type, paths } = await build({ target: "android", buildDir: "./build", ap
 for (const sourcePath of paths) {
   const name = artifactName({ appName: "My App", version: "1.0.0", type, sourcePath });
   // → "My-App-1.0.0.apk" / "My-App-1.0.0.aab" (android)
-  // → "My-App-1.0.0-release.exe" (desktop)
+  // → "My-App-1.0.0_en-US.msi" / "My-App-1.0.0-setup.exe" (desktop installers)
+  // → "My-App-1.0.0-release.exe" (desktop raw binary)
   // → "My-App-1.0.0.app" / ".ipa" (ios)
 }
 ```
@@ -171,10 +172,41 @@ Derives a versioned destination filename for an artifact produced by `build()`. 
 
 - Android APK: `<App-Name>-<version>-<type>.apk`
 - Android AAB: `<App-Name>-<version>.aab`
-- Desktop binary: `<App-Name>-<version>-<type><.exe?>` (where the type segment is `-release` or `-debug`)
+- Desktop installer (msi/nsis/deb/rpm/AppImage/dmg): `<App-Name>-<version><...suffix><.ext>` (Tauri's own filename is preserved; the type segment is not added)
+- Desktop raw binary: `<App-Name>-<version>-<type><.exe?>` (where the type segment is `-release` or `-debug`)
 - iOS `.app`/`.ipa`: `<App-Name>-<version><.ext>`
 
 Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName` and `version` are collapsed to a single `-` so the filename is safe on Windows, macOS, and Linux.
+
+## Cross-compilation
+
+The runtime supports cross-compiling desktop builds to a different OS target
+via the `crossCompile` config field (or `--cross-compile` CLI flag). This is
+useful for producing Windows installers (`.msi`/`.exe`) from a Linux build
+host, e.g. in a CI container.
+
+```javascript
+await Tauri.build({
+  target: "desktop",
+  buildDir: "./build",
+  crossCompile: "x86_64-pc-windows-gnu",
+  app: { id: "com.example.app", name: "My App" },
+});
+```
+
+When `crossCompile` is set:
+
+- `--target <triple>` is passed to `tauri build` so Cargo compiles for the
+  specified Rust target.
+- Artifact paths are resolved under `target/<triple>/release/` instead of
+  `target/release/`.
+- The `.exe` extension is used when the target triple contains `-windows-`.
+
+The Rust target triple must be installed beforehand (`rustup target add
+x86_64-pc-windows-gnu`) and the cross-linker / bundler tools must be available
+(MinGW-w64 for linking, NSIS for `.exe` setup installers, WiX under Wine for
+`.msi`). See the `Dockerfile.build` in the Connect app for a working example of
+a Linux container that builds Linux + Android + Windows artifacts.
 
 ## Android status
 
@@ -183,33 +215,53 @@ background scheduler (see [Scheduler](#scheduler) below).
 
 **What's there:**
 
-- `patchAndroidManifest` — adds `POST_NOTIFICATIONS` + `VIBRATE` permissions,
-  plus the `<service>` entry and `FOREGROUND_SERVICE*` permissions for the
-  scheduler service.
+- `tauri-plugin-vistta` (at `rust/plugin/`) — the runtime's own Tauri plugin crate.
+  On Android it registers a Kotlin `VisttaPlugin` class that owns:
+  - `VisttaService` — the foreground service that holds the process + webview
+    alive while a scheduler timer is active or a background socket is open.
+    Uses `foregroundServiceType="specialUse"` (Android 14+) so it is not
+    subject to the `dataSync` time budget that kills long-running services.
+    The service only calls `startForeground()` for actions started via
+    `startForegroundService()` (`REGISTER`, `SOCKET_OPENED`); other actions
+    (`CLEAR`, `STOP_IF_EMPTY`, `SOCKET_CLOSED`) are sent via `startService()`
+    on an already-running service. A null-intent system restart stops the
+    service immediately to avoid a `ForegroundServiceStartNotAllowedException`
+    crash loop.
+  - `VisttaNetwork` — the OkHttp client and Socket.IO Java client used for
+    background fetch and background sockets.
+  - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` JavascriptInterface
+    bridges injected into the webview.
+  - A default notification channel for the notification plugin.
+  - The `<uses-permission>`s (`POST_NOTIFICATIONS`, `VIBRATE`, `WAKE_LOCK`,
+    `FOREGROUND_SERVICE*`) and `<service>` entry in the plugin's own
+    `AndroidManifest.xml` — merged into the host app by Android's manifest
+    merger, no host-file patching needed.
+  - The `okhttp` and `socket.io-client` Maven deps in the plugin's own
+    `build.gradle.kts`.
+    On desktop/iOS the plugin is a no-op.
 - `patchAndroidStrings` — keeps launcher label + activity title in sync with
   `tauri.conf.json`
-- `patchMainActivity` — registers a default notification channel for the
-  notification plugin, and a `VisttaScheduler` JavascriptInterface used by
-  the Scheduler JS API to start/stop timers.
-- `patchVisttaService` — writes the synthesized `VisttaService.kt` (the
-  foreground service that holds the process + webview alive while a
-  scheduler timer is active).
 - `patchBuildTask` — rewrites Tauri 2.11.2's `BuildTask.kt` to call the
   `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
   the consumer's `package.json` doesn't need a `tauri` script
 - `patchCargoToml` / `patchLibRs` / `patchMainRs` — full file writes, no
   marker comments
-- `nameSuffix()` (`.dev` in dev) — appended to the `tauri.conf.json`
-  `productName`, so the dev build's installed-app name is distinct from the
-  release build and both can coexist
-- `crateNameSuffix()` (`-dev` in dev) — appended to the Cargo `[package].name`
-  (and therefore the binary artifact name on disk). Cargo identifiers forbid
-  dots, so the crate suffix uses a dash
+- `version` — read from the consumer's `package.json` and written to both
+  `tauri.conf.json` and `Cargo.toml`, so bumping `package.json` propagates
+  to the generated Tauri config and the Rust crate in one place. Override
+  via `extraTauriConfig.version` if you need to decouple them.
+- `nameSuffix()` (` (Dev)` in dev) — appended to the `tauri.conf.json`
+  `productName`, so the dev build's installed-app name is distinct from
+  the release build and both can coexist
 - `devSuffix()` (` [DEV]` in dev) — appended to user-visible strings (window
   title on desktop, `strings.xml` `app_name` + `main_activity_title` on
   Android)
-- `resolveAppId()` — the Android `applicationId` gets a `.dev` suffix in dev
-  so dev and release APKs can be installed side-by-side
+- `debugApplicationIdSuffix` (`.dev` in dev) — set in `tauri.conf.json`
+  `bundle.android` by `mergeConfig`. Tauri appends it to the Android
+  `applicationId` in debug builds so dev and release APKs install
+  side-by-side. The `namespace` stays stable (no suffix) so the generated
+  Kotlin source tree doesn't drift between dev/release — no stale
+  package-dir cleanup needed.
 - Desktop `app.background: true` — keeps the app alive in the background (tray
   icon + hide-on-close). The `tray-icon` Cargo feature is conditionally added.
   Has no effect on Android/iOS.
@@ -218,18 +270,50 @@ background scheduler (see [Scheduler](#scheduler) below).
 
 - Foreground service for non-scheduler purposes (e.g. long-running sync
   workers)
-- Auto-generated release keystore + Gradle `signingConfigs` injection
+- Auto-generated release keystore (you must provide your own)
 
-**Roadmap — release signing.** The Android replacement will be a
-platform alarm API (e.g. Android `WorkManager` with a JS-side scheduler)
-so the runtime can wake the app on a schedule without holding a
-foreground service.
+**Android release signing.** Tauri does not support Android keystore
+signing via `tauri.conf.json` — it must be done in Gradle. The runtime
+auto-generates and manages the keystore for you:
 
-In the meantime, if you need a release-signed APK, generate a keystore
-yourself (`keytool -genkeypair ... -keystore release.keystore`) and
-wire its credentials into your build via env vars. The `tauri.conf.json`
-`bundle.android` block (minSdkVersion, versionCode) is still populated
-from `config.signing.android` for you.
+- **Release builds**: if no keystore exists at `buildDir/android.keystore`,
+  one is generated via `keytool` with a fixed alias (`upload`) and a
+  stable password derived from the app id. The password is persisted in
+  `buildDir/android.keystore.properties`. The keystore is copied into
+  `gen/android/app/release.keystore` and the Gradle `signingConfigs` block
+  is injected into `app/build.gradle.kts`. The persistent keystore in
+  `buildDir/` is reused across builds so the signing key stays stable
+  (same key = upgradeable APK).
+- **Debug builds**: no keystore is used. Any previously-injected signing
+  config is stripped from `build.gradle.kts` and the copied keystore is
+  removed from `gen/android/app/`. The persistent keystore in `buildDir/`
+  is kept for the next release build.
+
+To use your own keystore instead of the auto-generated one, set
+`signing.android.keystorePath` explicitly. In that case the passwords
+are read from env vars (`keystorePasswordEnv` / `keyPasswordEnv`,
+defaulting to `ANDROID_KEYSTORE_PASSWORD`):
+
+```javascript
+await Tauri.build({
+  target: "android",
+  buildDir: "./build",
+  app: { id: "com.example.app", name: "My App" },
+  signing: {
+    android: {
+      keystorePath: "./release.keystore",
+      keystorePasswordEnv: "ANDROID_KEYSTORE_PASSWORD",
+      keyAlias: "upload",
+      keyPasswordEnv: "ANDROID_KEY_PASSWORD",
+      minSdkVersion: 24,
+      versionCode: 12,
+    },
+  },
+});
+```
+
+The `tauri.conf.json` `bundle.android` block (minSdkVersion, versionCode)
+is also populated from `config.signing.android`.
 
 ## Integrations
 
@@ -321,12 +405,17 @@ firing while the user has me in their pocket." Use Android's native
 
 #### Background `fetch` override (Android)
 
-On Android, `window.fetch` is monkey-patched while a scheduler-tick
-callback is running. Any `fetch` issued from inside the callback is
-forwarded to the `VisttaService` foreground service, which performs the
-HTTP request on a service-owned thread and delivers the result back
-into the webview via `evalScript`. Outside of tick callbacks, `fetch`
-uses the WebView's normal network stack.
+On Android, the `fetch` exported from `@vistta/js-runtime/plugins` is
+routed through the `VisttaNetwork` OkHttp client (running in the
+foreground service) whenever the `VisttaFetch` bridge is present. This
+means `fetch()` calls complete even when the activity is paused — the
+service's network stack is not bound to the activity lifecycle. When
+the bridge is absent (desktop, web, iOS, or before the activity injects
+the bridge), `fetch` falls through to the regular `window.fetch`.
+
+> **Note:** this applies to the `fetch` function imported from
+> `@vistta/js-runtime/plugins`, not to `window.fetch` globally. The
+> runtime does not monkey-patch `window.fetch`.
 
 The override is what makes background polling work: while the activity
 is paused, the WebView's own network stack stops completing responses,
@@ -343,12 +432,12 @@ Android. Limitations to be aware of:
 - **Streaming responses**: not supported. The service buffers the full
   response before delivering. Use non-streaming fetches.
 - **Cancellation**: `AbortSignal` is honored. Aborting the signal calls
-  `VisttaService.abortFetch(id)` and rejects the promise with
+  `VisttaNetwork.abortFetch(id)` and rejects the promise with
   `DOMException("Aborted", "AbortError")`.
 - **Auth / CORS**: not affected. The service performs a plain HTTP
-  request, so CORS does not apply (this is the OS's `HttpURLConnection`,
-  not a browser fetch). Auth headers from the original request are
-  forwarded.
+  request via OkHttp, so CORS does not apply (this is the OS's HTTP
+  client, not a browser fetch). Auth headers from the original request
+  are forwarded.
 
 ## Platform Detection
 
@@ -369,19 +458,19 @@ if (window.__TAURI__) {
 ## Running on iOS (macOS only)
 
 Not yet supported via `Tauri.run` / `Tauri.build`. Use `npx tauri ios dev` directly inside
-`buildDir` after running a desktop build at least once to populate the template baseline.
+`buildDir` after running a desktop build at least once to populate the baseline.
 
 ## How It Works
 
 The runtime's `build()` (and `run()`'s underlying `applyConfig`) seeds the
-`buildDir` from the package's `template/` directory and then runs the
+`buildDir` from the package's `rust/` directory and then runs the
 generators:
 
 ```
-template/                                verbatim `tauri init` baseline at TAURI_VERSION
+rust/                                   verbatim `tauri init` baseline at TAURI_VERSION
 ```
 
-1. `applyTemplate()` (in `apply-template.js`) copies `template/` into
+1. `applyTemplate()` (in `apply-template.js`) copies `rust/` into
    `buildDir/`.
 2. `patchMainRs` / `patchLibRs` / `patchCargoToml` regenerate the Rust
    entry points and plugin dependencies from `plugins.config.js`
@@ -391,17 +480,24 @@ template/                                verbatim `tauri init` baseline at TAURI
    `extraTauriConfig`.
 4. `patchCapabilities` writes `capabilities/default.json` from
    `plugins.config.js` + `extraCapabilities`.
-5. Android-only: `patchAndroidManifest`, `patchAndroidStrings`,
-   `patchMainActivity`, `patchBuildTask`, `patchVisttaService`. Tauri
-   files are patched in place; the runtime doesn't own them end-to-end
-   on Android. The service file (`VisttaService.kt`) is a full-file
-   write owned by the runtime.
+5. Android-only: `patchBuildTask`, `patchAndroidStrings`. These patch
+   Tauri's _generated_ host files that cannot be plugin-ized (BuildTask.kt
+   and strings.xml launcher label). The dev/release `applicationId` split
+   is handled natively by Tauri via `debugApplicationIdSuffix` in
+   `tauri.conf.json` (set by `mergeConfig`) — no namespace/applicationId
+   re-alignment or stale package-dir cleanup needed. The runtime's
+   Android background features (foreground service, background fetch,
+   background socket, JavascriptInterface bridges, permissions, Maven
+   deps) are owned by the `tauri-plugin-vistta` crate at `rust/plugin/` and
+   registered as a standard Tauri Android plugin — Android's manifest
+   merger and Gradle dependency resolution pull them into the host app
+   automatically.
 6. `npx tauri (android) dev|build` runs.
 
 The pinned Tauri version lives in `index.js` as `TAURI_VERSION` and
 is also exported from the package. It must match the
 `@tauri-apps/cli` version in `package.json` and the baseline inside
-`template/`.
+`rust/`.
 
 All generated files in `buildDir/` are owned by the runtime —
 customise via the config object, not by editing files in `buildDir`.
@@ -413,28 +509,34 @@ When a new Tauri version ships:
 1. Bump `@tauri-apps/cli` and `@tauri-apps/api` in `package.json`.
 2. Bump `TAURI_VERSION` in `index.js` to match.
 3. Run `tauri init` in a scratch project at the new version and copy
-   the produced files into `template/`, then compare against the
+   the produced files into `rust/`, then compare against the
    previous baseline and reconcile any structural changes Tauri
    made (e.g. a new field in `tauri.conf.json`, a new default
    permission in `capabilities/default.json`).
 4. The patch functions (`patchCargoToml`, `patchLibRs`, etc.) own
    their target files in full, so most upstream changes only affect
    the seed baseline — review the diff to make sure no new default
-   needs to be threaded through the generators.
+   needs to be threaded through the generators. The Android host-file
+   patches (`patchBuildTask`, `patchAppGradleNamespace`) are regex-based
+   against Tauri's generated output; if Tauri changes the shape of
+   `BuildTask.kt` or `app/build.gradle.kts`, those patches may need
+   updating. The `tauri-plugin-vistta` crate at `rust/plugin/` is unaffected
+   by Tauri upgrades (it uses Tauri's stable plugin API).
 5. Commit. The next `build()` will use the new baseline.
 
 ## Tauri Plugins Used
 
 See `plugins.config.js` for the canonical list. As of writing:
 
-| Plugin                           | Purpose                    |
-| -------------------------------- | -------------------------- |
-| `tauri-plugin-clipboard-manager` | Clipboard access           |
-| `tauri-plugin-dialog`            | Native dialogs             |
-| `tauri-plugin-fs`                | File system access         |
-| `tauri-plugin-haptics`           | Haptic feedback            |
-| `tauri-plugin-notification`      | System notifications       |
-| `tauri-plugin-shell`             | Open URLs, spawn processes |
+| Plugin                           | Purpose                                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------------------------- |
+| `tauri-plugin-vistta`            | Android background scheduler, fetch, and socket bridge (runtime-owned, at `rust/plugin/`) |
+| `tauri-plugin-clipboard-manager` | Clipboard access                                                                          |
+| `tauri-plugin-dialog`            | Native dialogs                                                                            |
+| `tauri-plugin-fs`                | File system access                                                                        |
+| `tauri-plugin-haptics`           | Haptic feedback                                                                           |
+| `tauri-plugin-notification`      | System notifications                                                                      |
+| `tauri-plugin-shell`             | Open URLs, spawn processes                                                                |
 
 ## License
 

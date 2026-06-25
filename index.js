@@ -2,21 +2,17 @@ import fs from "@vistta/fs";
 import { applyTemplate } from "./apply-template.js";
 import {
   mergeConfig,
-  patchAndroidManifest,
   patchAndroidStrings,
-  patchAppGradle,
+  patchAppGradleSigning,
   patchBuildTask,
   patchCapabilities,
   patchCargoToml,
   patchLibRs,
-  patchMainActivity,
   patchMainRs,
-  patchVisttaNetwork,
-  patchVisttaService,
 } from "./patches/index.js";
-import { exec, generateIcons, getInfo, platform, resolveAppId } from "./utils/index.js";
+import { exec, generateIcons, getInfo, platform, resolveAppId, resolveApplicationId } from "./utils/index.js";
 
-const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./template");
+const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./rust");
 const TAURI_VERSION = "2.11.2";
 const DEV = process.env.NODE_ENV === "development";
 
@@ -36,6 +32,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {boolean} [app.fullscreen] - Start in fullscreen.
  * @property {boolean} [app.devTools] - Open DevTools on startup.
  * @property {boolean} [app.background] - Desktop only. When true, the app stays alive in the background (tray icon + hide-on-close). Has no effect on Android/iOS.
+ * @property {string} [app.version] - App version (forwarded to bundle versioning; used to disambiguate desktop installers).
  * @property {string} [title] - Window title.
  * @property {string} [icon] - Icon path (relative to buildDir/www).
  * @property {string} [backgroundColor] - Window background color (hex).
@@ -44,7 +41,15 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
  * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
- * @property {Object} [signing] - Platform code-signing settings. Windows + macOS settings are forwarded to `tauri.conf.json` bundle config; Android signing is currently opt-in (set `signing.android` to provide a pre-existing keystore) and the runtime does not auto-generate a keystore.
+ * @property {Object} [signing] - Platform code-signing settings. Windows + macOS settings are forwarded to `tauri.conf.json` bundle config; Android signing is auto-managed (keystore auto-generated in `buildDir/` for release builds, removed for debug builds).
+ * @property {Object} [signing.android] - Android release signing. If omitted, a keystore is auto-generated in `buildDir/android.keystore` with a stable password. If `keystorePath` is set, that keystore is used instead with passwords from env vars.
+ * @property {string} [signing.android.keystorePath] - Path to a pre-existing `.keystore`/`.jks` file. If set, overrides auto-generation and passwords are read from env vars.
+ * @property {string} [signing.android.keystorePasswordEnv] - Env var name for the keystore password (default: `ANDROID_KEYSTORE_PASSWORD`). Only used when `keystorePath` is set.
+ * @property {string} [signing.android.keyAlias] - Key alias in the keystore (default: `"upload"`).
+ * @property {string} [signing.android.keyPasswordEnv] - Env var name for the key password (default: same as `keystorePasswordEnv`). Only used when `keystorePath` is set.
+ * @property {number} [signing.android.minSdkVersion] - Forwarded to `tauri.conf.json` `bundle.android.minSdkVersion`.
+ * @property {number} [signing.android.versionCode] - Forwarded to `tauri.conf.json` `bundle.android.versionCode`.
+ * @property {string} [crossCompile] - Rust target triple for cross-compilation (e.g. `"x86_64-pc-windows-gnu"` to build Windows installers from Linux). When set, `--target <triple>` is passed to `tauri build` and artifact paths are resolved under `target/<triple>/release/`.
  */
 
 /**
@@ -65,14 +70,18 @@ export async function run(config) {
       try {
         let closeCallback = null;
         let closed = false;
-        const appId = resolveAppId(config);
+        const appId = resolveApplicationId(config);
+        const namespace = resolveAppId(config);
         await adb(
           `install -r ${fs.resolve(
             config.buildDir,
             "gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk",
           )}`,
         );
-        await adb(`shell am start -n ${appId}/${appId}.MainActivity`);
+        // The component name is {applicationId}/{namespace}.MainActivity.
+        // The applicationId may have a .dev suffix (via debugApplicationIdSuffix)
+        // but the activity class lives under the stable namespace.
+        await adb(`shell am start -n ${appId}/${namespace}.MainActivity`);
         const interval = setInterval(async () => {
           try {
             const result = await adb(`shell dumpsys activity activities ${appId}`);
@@ -89,7 +98,6 @@ export async function run(config) {
           },
           close: async () => {
             await adb(`shell am force-stop ${appId}`);
-            await adb(`shell pm uninstall ${appId}`);
           },
           end: () =>
             new Promise((resolve) => {
@@ -132,7 +140,28 @@ export async function build(config) {
   const debug = DEV ? "--debug" : "";
 
   const artifacts = [];
+  // Tauri emits two kinds of "Finished ... at:" markers:
+  //   1) Single-line: `Finished 1 artifact at: <path>` (android apk/aab, ios).
+  //   2) Multi-line:  `Finished N bundles at:` followed by one indented
+  //      path per line (desktop msi/nsis). The header has no path on it,
+  //      so we track whether we just saw it and treat the next indented
+  //      lines as artifact paths.
+  let expectBundlePaths = false;
   const collectLine = (line) => {
+    const header = line.match(/Finished\s+\d+\s+bundles\s+at:\s*$/i);
+    if (header) {
+      expectBundlePaths = true;
+      return;
+    }
+    if (expectBundlePaths) {
+      const m = line.match(/^\s+(.+\.(?:msi|exe|app|ipa|apk|aab))$/i);
+      if (m) {
+        artifacts.push(m[1].trim());
+        return;
+      }
+      // First non-indented/non-artifact line ends the bundle list.
+      expectBundlePaths = false;
+    }
     const m = line.match(/Finished\s+\d+\s+\S+\s+at:\s*(.+)$/i);
     if (m) artifacts.push(m[1].trim());
   };
@@ -148,12 +177,8 @@ export async function build(config) {
       const androidGen = fs.resolve(cwd, "gen", "android");
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
       await patchBuildTask(cwd, config);
-      await patchAndroidManifest(cwd, config);
       await patchAndroidStrings(cwd, config);
-      await patchAppGradle(cwd);
-      await patchVisttaNetwork(cwd, config);
-      await patchMainActivity(cwd, config);
-      await patchVisttaService(cwd, config);
+      await patchAppGradleSigning(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
       try {
@@ -174,12 +199,17 @@ export async function build(config) {
     case "desktop": {
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
+      const crossTarget = config?.crossCompile || "";
+      const targetFlag = crossTarget ? `--target ${crossTarget}` : "";
       try {
-        await tauri(`build ${debug}`, { cwd, onLine });
+        await tauri(`build ${debug} ${targetFlag}`, { cwd, onLine });
       } catch {
         throw new Error(desktopBuildHint());
       }
-      artifacts.push(...(await defaultDesktopArtifacts(cwd, debug)));
+      // Prefer installers (msi/nsis) captured from tauri output; fall back to
+      // well-known bundle paths, then the raw binary.
+      if (artifacts.length === 0) artifacts.push(...defaultDesktopBundles(cwd, debug, config?.app?.version, crossTarget));
+      artifacts.push(...(await defaultDesktopArtifacts(cwd, debug, crossTarget)));
       return { type, paths: artifacts };
     }
     default:
@@ -240,14 +270,54 @@ function defaultIosArtifacts(cwd) {
   return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
 }
 
-async function defaultDesktopArtifacts(cwd, debug) {
+async function defaultDesktopArtifacts(cwd, debug, crossTarget = "") {
   const info = await getInfo({});
-  const exe = info.name + (platform() === "win32" ? ".exe" : "");
-  const release = fs.resolve(cwd, "target/release", exe);
-  const dbg = fs.resolve(cwd, "target/debug", exe);
+  // Cross-compiled binaries land under target/<triple>/; native builds under target/.
+  // The .exe extension is used when the target is Windows (either native win32 or
+  // a cross-compile triple ending in -windows-*).
+  const isWindows = crossTarget ? /-windows-/.test(crossTarget) : platform() === "win32";
+  const exe = info.name + (isWindows ? ".exe" : "");
+  const targetDir = crossTarget ? fs.resolve(cwd, "target", crossTarget) : fs.resolve(cwd, "target");
+  const release = fs.resolve(targetDir, "release", exe);
+  const dbg = fs.resolve(targetDir, "debug", exe);
   if (fs.existsSync(release)) return [release];
   if (fs.existsSync(dbg)) return [dbg];
   return [debug ? dbg : release];
+}
+
+/**
+ * Fallback paths for desktop installers (msi on Windows, .deb/.rpm/.AppImage
+ * on Linux, .app/.dmg on macOS) when tauri's `Finished N bundles at:` lines
+ * weren't captured. Only returns paths that exist on disk.
+ */
+function defaultDesktopBundles(cwd, debug, version, crossTarget = "") {
+  const buildType = debug ? "debug" : "release";
+  const targetDir = crossTarget ? fs.resolve(cwd, "target", crossTarget) : fs.resolve(cwd, "target");
+  const bundleDir = fs.resolve(targetDir, buildType, "bundle");
+  const out = [];
+  const candidates = [
+    fs.resolve(bundleDir, "msi"),
+    fs.resolve(bundleDir, "nsis"),
+    fs.resolve(bundleDir, "deb"),
+    fs.resolve(bundleDir, "rpm"),
+    fs.resolve(bundleDir, "appimage"),
+    fs.resolve(bundleDir, "app"),
+    fs.resolve(bundleDir, "dmg"),
+  ];
+  // When version is known, only include artifacts whose filename contains it,
+  // so stale artifacts from previous builds don't produce duplicates.
+  const versionSeg = version ? `_${version}_` : null;
+  for (const dir of candidates) {
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) {
+      if (versionSeg && !name.includes(versionSeg)) continue;
+      const ext = fs.extname(name).toLowerCase();
+      if (/\.(msi|exe|deb|rpm|app|dmg)$/i.test(ext) || /appimage$/i.test(name)) {
+        out.push(fs.resolve(dir, name));
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -258,6 +328,7 @@ async function defaultDesktopArtifacts(cwd, debug) {
  * config object, not by editing files in buildDir.
  */
 async function applyConfig(config) {
+  assertTauriVersion();
   const cwd = config.buildDir;
   await applyTemplate({ buildDir: cwd, tplDir: TEMPLATE_DIR });
   await patchMainRs(cwd, config);
@@ -265,6 +336,31 @@ async function applyConfig(config) {
   await patchCargoToml(cwd, config);
   await mergeConfig(cwd, config);
   await patchCapabilities(cwd, config);
+}
+
+/**
+ * Asserts that the `@tauri-apps/cli` version in this package's
+ * `package.json` matches the hardcoded `TAURI_VERSION` in `index.js`.
+ * The two are separate sources of truth — `TAURI_VERSION` drives the
+ * template baseline and the generated `Cargo.toml`, while
+ * `@tauri-apps/cli` is what `npx tauri` actually runs. A mismatch causes
+ * confusing build failures (e.g. the template is for 2.11 but the CLI is
+ * 2.12 and emits a different `gen/android` layout). This check turns a
+ * silent mismatch into a clear error at the start of the build.
+ */
+function assertTauriVersion() {
+  const pkgPath = fs.resolve(import.meta.dirname, "package.json");
+  const pkg = JSON.parse(String(fs.readFileSync(pkgPath, "utf8")));
+  const cliDep = pkg.dependencies?.["@tauri-apps/cli"];
+  if (!cliDep) return;
+  // Extract the version from the semver range (e.g. "^2.11.2" → "2.11.2").
+  const cliVersion = cliDep.replace(/^[^0-9]+/, "");
+  if (cliVersion !== TAURI_VERSION) {
+    throw new Error(
+      `Tauri version mismatch: TAURI_VERSION in index.js is "${TAURI_VERSION}" but @tauri-apps/cli in package.json is "${cliDep}". ` +
+        `Update both to the same version. See the "Upgrading Tauri" section in the README.`,
+    );
+  }
 }
 
 function resolveIconPath(config) {
@@ -301,5 +397,9 @@ function adb(args, options) {
  * Rejects on non-zero exit.
  */
 function tauri(args, options = {}) {
-  return exec("npx", `tauri ${args}`, options).end();
+  const { onLine, ...rest } = options;
+  // exec() dispatches via `onOutput(msg, isError)`; index.js uses `onLine(msg)`.
+  // Bridge the two so collectLine actually receives tauri's stdout.
+  const execOptions = onLine ? { ...rest, onOutput: (msg) => onLine(msg) } : rest;
+  return exec("npx", `tauri ${args}`, execOptions).end();
 }

@@ -1,6 +1,14 @@
 import fs from "@vistta/fs";
-import sharp from "sharp";
 import { writeIfChanged } from "./write-if-changed.js";
+
+// Lazy-load sharp so it's only required when icon generation is actually
+// needed. sharp is a heavy native module (platform-specific binaries); apps
+// that don't customise icons never pay the import cost.
+let _sharp;
+async function loadSharp() {
+  if (!_sharp) _sharp = (await import("sharp")).default;
+  return _sharp;
+}
 
 /**
  * @typedef {Object} PlatformIconConfig
@@ -14,6 +22,7 @@ import { writeIfChanged } from "./write-if-changed.js";
  * @param {PlatformIconConfig} config - Configuration object
  */
 export async function generateIcons({ target, buildDir, sourceIcon }) {
+  const sharp = await loadSharp();
   const icon = sharp(sourceIcon);
   const metadata = await icon.metadata();
   const size = Math.max(metadata.width || 512, metadata.height || 512);
@@ -25,11 +34,11 @@ export async function generateIcons({ target, buildDir, sourceIcon }) {
 
   switch (target) {
     case "android":
-      return await generateAndroidIcons(source, buildDir);
+      return await generateAndroidIcons(sharp, source, buildDir);
     case "desktop":
-      return await generateDesktopIcons(source, buildDir);
+      return await generateDesktopIcons(sharp, source, buildDir);
     case "ios":
-      return await generateIOSIcons(source, buildDir);
+      return await generateIOSIcons(sharp, source, buildDir);
     default:
       throw new Error(`Unsupported platform "${target}" for icon generation.`);
   }
@@ -40,7 +49,7 @@ export async function generateIcons({ target, buildDir, sourceIcon }) {
  * @param {Buffer} source - Source image buffer
  * @param {string} buildDir - Build output directory
  */
-async function generateAndroidIcons(source, buildDir) {
+async function generateAndroidIcons(sharp, source, buildDir) {
   const resDir = fs.resolve(buildDir, "gen", "android", "app", "src", "main", "res");
 
   // icons/ folder for Tauri (referenced by Cargo bundle config and the
@@ -50,7 +59,7 @@ async function generateAndroidIcons(source, buildDir) {
   await writeImage(sharp(source).resize(32, 32).png(), fs.resolve(iconsDir, "32x32.png"));
   await writeImage(sharp(source).resize(128, 128).png(), fs.resolve(iconsDir, "128x128.png"));
   await writeImage(sharp(source).resize(256, 256).png(), fs.resolve(iconsDir, "128x128@2x.png"));
-  await writeNotificationIcon(source, iconsDir);
+  await writeNotificationIcon(sharp, source, iconsDir);
 
   // Legacy launcher (pre-Android 8) — full square bitmap.
   const densities = [
@@ -128,7 +137,7 @@ async function generateAndroidIcons(source, buildDir) {
   for (const { name, size: px } of statDensities) {
     const dir = fs.resolve(resDir, name);
     await fs.mkdir(dir, { recursive: true });
-    await writeImage(silhouette(source, px), fs.resolve(dir, "ic_stat_notification.png"));
+    await writeImage(silhouette(sharp, source, px), fs.resolve(dir, "ic_stat_notification.png"));
   }
 }
 
@@ -137,13 +146,13 @@ async function generateAndroidIcons(source, buildDir) {
  * @param {Buffer} source - Source image buffer
  * @param {string} buildDir - Build output directory
  */
-async function generateDesktopIcons(source, buildDir) {
+async function generateDesktopIcons(sharp, source, buildDir) {
   const iconsDir = fs.resolve(buildDir, "icons");
   // Standard desktop icons
   await writeImage(sharp(source).resize(32, 32).png(), fs.resolve(iconsDir, "32x32.png"));
   await writeImage(sharp(source).resize(128, 128).png(), fs.resolve(iconsDir, "128x128.png"));
   await writeImage(sharp(source).resize(256, 256).png(), fs.resolve(iconsDir, "128x128@2x.png"));
-  await writeNotificationIcon(source, iconsDir);
+  await writeNotificationIcon(sharp, source, iconsDir);
 
   // Generate ICO (Windows) - multiple sizes embedded
   const icoSizes = [16, 32, 48, 256];
@@ -163,14 +172,14 @@ async function generateDesktopIcons(source, buildDir) {
  * @param {Buffer} source - Source image buffer
  * @param {string} buildDir - Build output directory
  */
-async function generateIOSIcons(source, buildDir) {
+async function generateIOSIcons(sharp, source, buildDir) {
   const iconsDir = fs.resolve(buildDir, "icons");
   const iosSizes = [20, 29, 40, 58, 60, 76, 80, 87, 120, 152, 167, 180, 1024];
 
   for (const size of iosSizes) {
     await writeImage(sharp(source).resize(size, size).png(), fs.resolve(iconsDir, `${size}x${size}.png`));
   }
-  await writeNotificationIcon(source, iconsDir);
+  await writeNotificationIcon(sharp, source, iconsDir);
 }
 
 /** Buffers a sharp pipeline and writes only when the output differs from disk. */
@@ -186,7 +195,7 @@ async function writeImage(pipeline, path) {
  * @param {Buffer} source
  * @param {string} iconsDir
  */
-async function writeNotificationIcon(source, iconsDir) {
+async function writeNotificationIcon(sharp, source, iconsDir) {
   await writeImage(sharp(source).resize(96, 96).png(), fs.resolve(iconsDir, "notification.png"));
 }
 
@@ -197,7 +206,7 @@ async function writeNotificationIcon(source, iconsDir) {
  * @param {Buffer} source
  * @param {number} size
  */
-function silhouette(source, size) {
+function silhouette(sharp, source, size) {
   return (
     sharp(source)
       .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })

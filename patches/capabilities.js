@@ -43,6 +43,11 @@ export async function patchCapabilities(targetDir, config) {
   };
   CORE_PERMISSIONS.forEach(push);
   for (const p of enabledPlugins) {
+    // Plugins with `noCommands: true` (e.g. the runtime's own
+    // tauri-plugin-vistta) expose no Tauri commands and no permissions —
+    // they only inject JavascriptInterface bridges into the webview. Skip
+    // them so the capabilities file stays clean.
+    if (p.noCommands) continue;
     push(`${p.id}:default`);
     if (Array.isArray(p.permissions)) p.permissions.forEach(push);
   }
