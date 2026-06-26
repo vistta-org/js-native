@@ -30,16 +30,9 @@
     "@vistta/js": "latest",
     "@vistta/utils": "latest"
   },
-  "optionalDependencies": {
-    "sharp": "^0.34.5"
-  },
   "peerDependencies": {
-    "socket.io-client": "^4.8.3"
-  },
-  "peerDependenciesMeta": {
-    "socket.io-client": {
-      "optional": true
-    }
+    "socket.io-client": "^4.8.3",
+    "sharp": "^0.34.5"
   },
   "engines": {
     "node": ">=22.0.0"
