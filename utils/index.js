@@ -233,6 +233,7 @@ export function exec(cmd, args = "", options = {}) {
   };
 }
 
+export { applyTemplate } from "./apply-template.js";
 export { generateIcons } from "./icons.js";
 export { writeIfChanged } from "./write-if-changed.js";
 export { platform };

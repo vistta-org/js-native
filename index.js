@@ -1,5 +1,4 @@
 import fs from "@vistta/fs";
-import { applyTemplate } from "./apply-template.js";
 import {
   mergeConfig,
   patchAndroidStrings,
@@ -10,7 +9,7 @@ import {
   patchLibRs,
   patchMainRs,
 } from "./patches/index.js";
-import { exec, generateIcons, getInfo, platform, resolveAppId, resolveApplicationId } from "./utils/index.js";
+import { applyTemplate, exec, generateIcons, getInfo, platform, resolveAppId, resolveApplicationId } from "./utils/index.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./rust");
 const TAURI_VERSION = "2.11.2";
