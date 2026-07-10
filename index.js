@@ -17,7 +17,7 @@ const DEV = process.env.NODE_ENV === "development";
 
 /**
  * @typedef {Object} Config
- * @property {"desktop"|"android"|"ios"} target - Target platform.
+ * @property {"desktop"|"android"|"ios"} target - Target platform. The CLI exposes `linux`/`windows`/`macos` which map to `desktop` (with `crossCompile` set for non-host platforms); at the runtime level only `desktop`/`android`/`ios` are used.
  * @property {string} buildDir - Build output directory (the src-tauri root for this app).
  * @property {Object} app - App settings.
  * @property {string} app.id - App identifier (e.g., "com.example.app").
@@ -40,14 +40,10 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
  * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
- * @property {Object} [signing] - Platform code-signing settings. Windows + macOS settings are forwarded to `tauri.conf.json` bundle config; Android signing is auto-managed (keystore auto-generated in `buildDir/` for release builds, removed for debug builds).
- * @property {Object} [signing.android] - Android release signing. If omitted, a keystore is auto-generated in `buildDir/android.keystore` with a stable password. If `keystorePath` is set, that keystore is used instead with passwords from env vars.
- * @property {string} [signing.android.keystorePath] - Path to a pre-existing `.keystore`/`.jks` file. If set, overrides auto-generation and passwords are read from env vars.
- * @property {string} [signing.android.keystorePasswordEnv] - Env var name for the keystore password (default: `ANDROID_KEYSTORE_PASSWORD`). Only used when `keystorePath` is set.
- * @property {string} [signing.android.keyAlias] - Key alias in the keystore (default: `"upload"`).
- * @property {string} [signing.android.keyPasswordEnv] - Env var name for the key password (default: same as `keystorePasswordEnv`). Only used when `keystorePath` is set.
- * @property {number} [signing.android.minSdkVersion] - Forwarded to `tauri.conf.json` `bundle.android.minSdkVersion`.
- * @property {number} [signing.android.versionCode] - Forwarded to `tauri.conf.json` `bundle.android.versionCode`.
+ * @property {Object | string} [keystore] - Path to a pre-existing Android signing keystore (`.keystore`/`.jks`) or an object with `file` and `password` properties. If set, overrides auto-generation.
+ * @property {string} [keystore.file] - Path to a pre-existing Android signing keystore (`.keystore`/`.jks`). If set, overrides auto-generation.
+ * @property {string} [keystore.password] - Password for the keystore and key (alias is `upload`). If `keystore.file` is set but this is omitted, falls back to the `ANDROID_KEYSTORE_PASSWORD` env var.
+ * @property {string} [name] - Override for the artifact base name (defaults to `app.name`). Output is lowercased.
  * @property {string} [crossCompile] - Rust target triple for cross-compilation (e.g. `"x86_64-pc-windows-gnu"` to build Windows installers from Linux). When set, `--target <triple>` is passed to `tauri build` and artifact paths are resolved under `target/<triple>/release/`.
  */
 
@@ -139,12 +135,6 @@ export async function build(config) {
   const debug = DEV ? "--debug" : "";
 
   const artifacts = [];
-  // Tauri emits two kinds of "Finished ... at:" markers:
-  //   1) Single-line: `Finished 1 artifact at: <path>` (android apk/aab, ios).
-  //   2) Multi-line:  `Finished N bundles at:` followed by one indented
-  //      path per line (desktop msi/nsis). The header has no path on it,
-  //      so we track whether we just saw it and treat the next indented
-  //      lines as artifact paths.
   let expectBundlePaths = false;
   const collectLine = (line) => {
     const header = line.match(/Finished\s+\d+\s+bundles\s+at:\s*$/i);
@@ -226,23 +216,26 @@ export async function build(config) {
  *
  * @param {object} args
  * @param {string} args.appName
+ * @param {string} [args.name] - Override for the base name (takes priority over `appName`).
  * @param {string} [args.version]
  * @param {"release" | "debug"} args.type
  * @param {string} args.sourcePath - The original artifact path (used to pick the right extension).
  * @returns {string}
  */
-export function artifactName({ appName, version, type, sourcePath }) {
+export function artifactName({ appName, name, version, type, sourcePath }) {
   const ext = fs.extname(sourcePath);
   const safe = (s) =>
     String(s || "")
       .replace(/[\s\\/:*?"<>|]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .trim();
-  const baseName = safe(appName) || "app";
-  const ver = version ? `-${safe(version)}` : "";
   const includeType = /^(apk|exe)$/i.test(ext);
   const typeSeg = includeType ? `-${type}` : "";
-  return `${baseName}${ver}${typeSeg}${ext}`;
+  if (name) {
+    if (safe(name) !== name) throw new Error(`Invalid artifact name "${name}". Example of a safe name: "${safe(name)}"`);
+    return `${name}${typeSeg}${ext}`;
+  }
+  return `${safe(appName) || "app"}${version ? `-${safe(version)}` : ""}${typeSeg}${ext}`.toLowerCase();
 }
 
 export { getInfo, platform, TAURI_VERSION };
@@ -271,9 +264,6 @@ function defaultIosArtifacts(cwd) {
 
 async function defaultDesktopArtifacts(cwd, debug, crossTarget = "") {
   const info = await getInfo({});
-  // Cross-compiled binaries land under target/<triple>/; native builds under target/.
-  // The .exe extension is used when the target is Windows (either native win32 or
-  // a cross-compile triple ending in -windows-*).
   const isWindows = crossTarget ? /-windows-/.test(crossTarget) : platform() === "win32";
   const exe = info.name + (isWindows ? ".exe" : "");
   const targetDir = crossTarget ? fs.resolve(cwd, "target", crossTarget) : fs.resolve(cwd, "target");

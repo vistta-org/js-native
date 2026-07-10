@@ -82,8 +82,8 @@ export async function mergeConfig(targetDir, config) {
  * Maps the high-level `signing` config to Tauri bundle signing fields.
  *
  * @example
+ *   keystore: { file: "./release.keystore", password: "..." },
  *   signing: {
- *     android: { keystorePath: "release.keystore", keystorePassword: "...", keyAlias: "...", keyPassword: "..." },
  *     windows: { certificateThumbprint: "...", digestAlgorithm: "sha256", timestampUrl: "..." },
  *     macos:   { signingIdentity: "Developer ID Application: ...", providerShortName: "...", entitlements: "entitlements.plist" }
  *   }
@@ -92,12 +92,6 @@ function buildSigning(config) {
   const s = config?.signing;
   if (!s) return {};
   const out = {};
-  if (s.android) {
-    out.android = {
-      ...(s.android.minSdkVersion ? { minSdkVersion: s.android.minSdkVersion } : {}),
-      ...(s.android.versionCode ? { versionCode: s.android.versionCode } : {}),
-    };
-  }
   if (s.windows) {
     out.windows = { wix: {}, nsis: {} };
     if (s.windows.certificateThumbprint) {

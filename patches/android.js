@@ -87,10 +87,10 @@ const RELEASE_SIGNING = { begin: "// vistta:release-signing:begin", end: "// vis
  * persistent keystore in `buildDir/` is kept so the next release build
  * can reuse it (same signing key = upgradeable APK).
  *
- * If `config.signing.android.keystorePath` is set explicitly, that
- * keystore is used instead of the auto-generated one. In that case the
- * passwords are read from the env vars named in
- * `config.signing.android.keystorePasswordEnv` / `keyPasswordEnv`.
+ * If `config.keystore` is set, that keystore is used instead of the
+ * auto-generated one. It can be a string (path only, password from
+ * `ANDROID_KEYSTORE_PASSWORD` env var) or an object `{ file, password }`.
+ * The password is used for both the keystore and the key; alias is `upload`.
  */
 export async function patchAppGradleSigning(targetDir, config) {
   const appGradlePath = fs.resolve(targetDir, "gen", "android", "app", "build.gradle.kts");
@@ -112,20 +112,21 @@ export async function patchAppGradleSigning(targetDir, config) {
   }
 
   // Release builds: ensure a keystore exists and wire it into Gradle.
-  const explicit = config?.signing?.android?.keystorePath;
+  const ks = config?.keystore;
+  const explicit = typeof ks === "string" ? ks : ks?.file;
   let keystorePath;
   let storePassword;
   let keyAlias;
   let keyPassword;
 
   if (explicit) {
-    // User-provided keystore: read passwords from env vars.
+    // User-provided keystore: password from the keystore object or
+    // ANDROID_KEYSTORE_PASSWORD env var. Used for both the keystore and the
+    // key. Alias is always "upload".
     keystorePath = explicit;
-    const keystorePasswordEnv = config.signing.android.keystorePasswordEnv || "ANDROID_KEYSTORE_PASSWORD";
-    keyAlias = config.signing.android.keyAlias || "upload";
-    const keyPasswordEnv = config.signing.android.keyPasswordEnv || keystorePasswordEnv;
-    storePassword = process.env[keystorePasswordEnv] || "";
-    keyPassword = process.env[keyPasswordEnv] || "";
+    keyAlias = "upload";
+    storePassword = (typeof ks === "object" ? ks.password : "") || process.env.ANDROID_KEYSTORE_PASSWORD || "";
+    keyPassword = storePassword;
   } else {
     // Auto-generated keystore: stored in buildDir, password in a properties file.
     const keystoreDir = targetDir;
@@ -168,7 +169,7 @@ export async function patchAppGradleSigning(targetDir, config) {
     } else {
       // Keystore exists but no properties file — can't recover the password.
       throw new Error(
-        `Keystore exists at ${keystorePath} but no properties file found at ${propsPath}. Delete the keystore to regenerate, or provide signing.android.keystorePath with env vars.`,
+        `Keystore exists at ${keystorePath} but no properties file found at ${propsPath}. Delete the keystore to regenerate, or provide a keystore config with a password.`,
       );
     }
   }

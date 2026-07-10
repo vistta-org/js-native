@@ -1,8 +1,7 @@
 import fs from "@vistta/fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { platform } from "node:os";
 
-let env;
 let cachedPkg;
 
 async function readPkg() {
@@ -159,44 +158,14 @@ export function exec(cmd, args = "", options = {}) {
     args = "";
   }
   const argv = Array.isArray(args) ? args : String(args).split(" ").filter(Boolean);
-  // Arrays imply the consumer wants no shell quoting/expansion. Strings keep the
-  // legacy shell-mode default for backward compat.
-  const shellDefault = !Array.isArray(args);
 
-  if (!env) {
-    if (platform() === "win32") {
-      const ps = spawnSync(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          `
-  $machine = [System.Environment]::GetEnvironmentVariables('Machine')
-  $user = [System.Environment]::GetEnvironmentVariables('User')
-
-  $result = @{}
-
-  foreach ($k in $machine.Keys) {
-    $result[$k] = $machine[$k]
-  }
-
-  foreach ($k in $user.Keys) {
-    $result[$k] = $user[$k]
-  }
-
-  $result | ConvertTo-Json -Compress
-        `,
-        ],
-        { encoding: "utf8" },
-      );
-
-      if (ps.status !== 0) env = { ...process.env };
-      else env = { ...process.env, ...JSON.parse(ps.stdout) };
-    } else env = { ...process.env };
-  }
   const { onOutput, ...spawnOptions } = options || {};
   const stdio = spawnOptions.stdio ? spawnOptions.stdio : onOutput ? "pipe" : "inherit";
-  const merged = Object.assign({ stdio, shell: shellDefault, env }, spawnOptions);
+  // On Windows, spawn() without shell:true can't find .cmd/.bat wrappers like
+  // npx.cmd. Enable shell mode automatically unless the caller explicitly
+  // set shell: false.
+  const shell = spawnOptions.shell !== undefined ? spawnOptions.shell : process.platform === "win32";
+  const merged = Object.assign({ stdio, shell }, spawnOptions);
   const child = spawn(cmd, argv, /** @type {any} */ (merged));
 
   if (onOutput && merged.stdio === "pipe") {

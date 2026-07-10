@@ -119,21 +119,8 @@ await Tauri.build({
 
   // Platform code-signing. Windows + macOS settings are forwarded to
   // tauri.conf.json bundle config. Android: provide a pre-existing keystore
-  // path + credentials; the runtime does not auto-generate one.
-  signing: {
-    android: {
-      keystorePath: "./release.keystore",
-      keystorePasswordEnv: "ANDROID_KEYSTORE_PASSWORD",
-      minSdkVersion: 24,
-      versionCode: 12,
-    },
-    windows: { certificateThumbprint: "...", digestAlgorithm: "sha256", timestampUrl: "http://timestamp.digicert.com" },
-    macos: {
-      signingIdentity: "Developer ID Application: ...",
-      providerShortName: "TEAMID",
-      entitlements: "./entitlements.plist",
-    },
-  },
+  // path + password.
+  keystore: { file: "./release.keystore", password: "..." },
   // Dev-only: pass through a custom dev server URL (otherwise frontendDist is used).
   devUrl: "http://localhost:5173",
 });
@@ -184,6 +171,12 @@ The runtime supports cross-compiling desktop builds to a different OS target
 via the `crossCompile` config field (or `--cross-compile` CLI flag). This is
 useful for producing Windows installers (`.msi`/`.exe`) from a Linux build
 host, e.g. in a CI container.
+
+The CLI exposes `linux`, `windows`, and `macos` targets which map to the
+runtime's `desktop` target — `windows` sets `crossCompile` to
+`x86_64-pc-windows-gnu`, `linux` builds natively, and `macos` is not
+supported on Linux. At the runtime level, only `desktop`/`android`/`ios`
+are used.
 
 ```javascript
 await Tauri.build({
@@ -290,30 +283,18 @@ auto-generates and manages the keystore for you:
   is kept for the next release build.
 
 To use your own keystore instead of the auto-generated one, set
-`signing.android.keystorePath` explicitly. In that case the passwords
-are read from env vars (`keystorePasswordEnv` / `keyPasswordEnv`,
-defaulting to `ANDROID_KEYSTORE_PASSWORD`):
+`keystore` to either a string (path only, password from `ANDROID_KEYSTORE_PASSWORD`
+env var) or an object `{ file, password }` (used for both the keystore and the
+key; alias is `upload`):
 
 ```javascript
 await Tauri.build({
   target: "android",
   buildDir: "./build",
   app: { id: "com.example.app", name: "My App" },
-  signing: {
-    android: {
-      keystorePath: "./release.keystore",
-      keystorePasswordEnv: "ANDROID_KEYSTORE_PASSWORD",
-      keyAlias: "upload",
-      keyPasswordEnv: "ANDROID_KEY_PASSWORD",
-      minSdkVersion: 24,
-      versionCode: 12,
-    },
-  },
+  keystore: { file: "./release.keystore", password: "..." },
 });
 ```
-
-The `tauri.conf.json` `bundle.android` block (minSdkVersion, versionCode)
-is also populated from `config.signing.android`.
 
 ## Integrations
 
