@@ -1,5 +1,5 @@
 import fs from "@vistta/fs";
-import { devSuffix, getInfo, nameSuffix, resolveAppId, writeIfChanged } from "../utils/index.js";
+import { devSuffix, getInfo, nameSuffix, resolveAppId, resolveTargets, writeIfChanged } from "../utils/index.js";
 
 /**
  * Writes `tauri.conf.json` by deep-merging the consumer config and any `extraTauriConfig`
@@ -59,7 +59,7 @@ export async function mergeConfig(targetDir, config) {
     },
     bundle: {
       active: true,
-      targets: "all",
+      targets: resolveBundleTargets(config),
       icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
       // In development, Tauri appends this suffix to the Android
       // applicationId so the dev APK installs side-by-side with the
@@ -107,6 +107,23 @@ function buildSigning(config) {
     if (s.macos.entitlements) out.macOS.entitlements = s.macos.entitlements;
   }
   return out;
+}
+
+/**
+ * Resolves `bundle.targets` for the generated tauri.conf.json. Only applies to
+ * desktop — Android/iOS bundle formats are controlled via CLI flags in `build()`.
+ * Returns a single string (Tauri accepts a string or array) or an array when
+ * multiple targets are specified. Returns "all" for non-desktop platforms since
+ * Tauri's bundle.targets doesn't accept mobile format names (apk/aab/ipa/app).
+ * Accepts convenience aliases: "exe" → "nsis", "appimage" → "appimage".
+ */
+const TARGET_ALIASES = { exe: "nsis" };
+function resolveBundleTargets(config) {
+  if (config?.platform && config.platform !== "desktop") return "all";
+  const targets = resolveTargets(config, "desktop");
+  if (targets.length === 0 || targets.includes("all")) return "all";
+  const mapped = targets.map((t) => TARGET_ALIASES[t] || t);
+  return mapped.length === 1 ? mapped[0] : mapped;
 }
 
 /**

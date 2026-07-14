@@ -9,7 +9,17 @@ import {
   patchLibRs,
   patchMainRs,
 } from "./patches/index.js";
-import { applyTemplate, exec, generateIcons, getInfo, platform, resolveAppId, resolveApplicationId } from "./utils/index.js";
+import {
+  applyTemplate,
+  exec,
+  generateIcons,
+  getInfo,
+  platform,
+  resolveAppId,
+  resolveApplicationId,
+  resolvePlatform,
+  resolveTargets,
+} from "./utils/index.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./rust");
 const TAURI_VERSION = "2.11.2";
@@ -17,7 +27,7 @@ const DEV = process.env.NODE_ENV === "development";
 
 /**
  * @typedef {Object} Config
- * @property {"desktop"|"android"|"ios"} target - Target platform. The CLI exposes `linux`/`windows`/`macos` which map to `desktop` (with `crossCompile` set for non-host platforms); at the runtime level only `desktop`/`android`/`ios` are used.
+ * @property {"desktop"|"android"|"ios"|"linux"|"windows"|"macos"} platform - Target platform. "linux"/"windows"/"macos" map to "desktop" (with "windows"/"macos" auto-setting crossCompile); at the runtime level only "desktop"/"android"/"ios" are used internally.
  * @property {string} buildDir - Build output directory (the src-tauri root for this app).
  * @property {Object} app - App settings.
  * @property {string} app.id - App identifier (e.g., "com.example.app").
@@ -45,6 +55,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {string} [keystore.password] - Password for the keystore and key (alias is `upload`). If `keystore.file` is set but this is omitted, falls back to the `ANDROID_KEYSTORE_PASSWORD` env var.
  * @property {string} [name] - Override for the artifact base name (defaults to `app.name`). Output is lowercased.
  * @property {string} [crossCompile] - Rust target triple for cross-compilation (e.g. `"x86_64-pc-windows-gnu"` to build Windows installers from Linux). When set, `--target <triple>` is passed to `tauri build` and artifact paths are resolved under `target/<triple>/release/`.
+ * @property {string|string[]|Object<string,string|string[]>} [target] - Bundle format(s) to produce for the current platform. Accepts a single value, a list, or a per-platform object keyed by `desktop`/`android`/`ios`. Android: `"apk"` / `"aab"` (default: both). iOS: `"ipa"` / `"app"` (default: ipa). Desktop: Tauri `bundle.targets` values (`"msi"`, `"nsis"`, `"deb"`, `"rpm"`, `"appimage"`, `"app"`, `"dmg"`, or `"all"`; default: `"all"`).
  */
 
 /**
@@ -58,7 +69,9 @@ const DEV = process.env.NODE_ENV === "development";
  * @param {Config} config
  */
 export async function run(config) {
-  switch (config.target) {
+  const resolved = resolvePlatform(config.platform);
+  config = { ...config, ...resolved };
+  switch (config.platform) {
     case "ios":
       throw new Error("iOS target is not supported yet.");
     case "android": {
@@ -110,7 +123,7 @@ export async function run(config) {
       return exec(fs.resolve(config.buildDir, "target/debug", app), "", { shell: false });
     }
     default:
-      throw new Error(`Unsupported target "${config.target}". Supported targets: desktop, android, ios.`);
+      throw new Error(`Unsupported platform "${config.platform}". Supported platforms: desktop, android, ios.`);
   }
 }
 
@@ -127,6 +140,9 @@ export async function run(config) {
  * @returns {Promise<{ type: "release" | "debug", paths: string[] }>}
  */
 export async function build(config) {
+  const cliPlatform = config.platform;
+  const resolved = resolvePlatform(cliPlatform);
+  config = { ...config, ...resolved, __cliPlatform: cliPlatform };
   await applyConfig(config);
 
   const cwd = config.buildDir;
@@ -161,7 +177,7 @@ export async function build(config) {
     }
   };
 
-  switch (config.target) {
+  switch (config.platform) {
     case "android": {
       const androidGen = fs.resolve(cwd, "gen", "android");
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
@@ -170,18 +186,24 @@ export async function build(config) {
       await patchAppGradleSigning(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
         await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
+      const androidTargets = resolveTargets(config, "android");
+      const apkFlag = androidTargets.includes("apk") ? "--apk" : "";
+      const aabFlag = androidTargets.includes("aab") ? "--aab" : "";
+      const formatFlags = (apkFlag || aabFlag) && `${apkFlag} ${aabFlag}`.trim();
       try {
-        await tauri(`android build ${debug}`, { cwd, onLine });
+        await tauri(`android build ${debug} ${formatFlags}`, { cwd, onLine });
       } catch {
         throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
       }
-      if (artifacts.length === 0) artifacts.push(...defaultAndroidArtifacts(cwd, debug));
+      if (artifacts.length === 0) artifacts.push(...defaultAndroidArtifacts(cwd, debug, androidTargets));
       return { type, paths: artifacts };
     }
     case "ios": {
       if (!fs.existsSync(fs.resolve(cwd, "gen", "ios"))) await tauri("ios init", { cwd, onLine });
       if (iconPath && fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
-      await tauri(`ios build ${debug}`, { cwd, onLine });
+      const iosTargets = resolveTargets(config, "ios");
+      const archiveFlag = iosTargets.includes("app") && !iosTargets.includes("ipa") ? "--archive-only" : "";
+      await tauri(`ios build ${debug} ${archiveFlag}`, { cwd, onLine });
       if (artifacts.length === 0) artifacts.push(...defaultIosArtifacts(cwd));
       return { type, paths: artifacts };
     }
@@ -202,7 +224,7 @@ export async function build(config) {
       return { type, paths: artifacts };
     }
     default:
-      throw new Error(`Unsupported target "${config.target}". Supported: desktop, android, ios.`);
+      throw new Error(`Unsupported platform "${config.platform}". Supported: desktop, android, ios.`);
   }
 }
 
@@ -240,21 +262,25 @@ export function artifactName({ appName, name, version, type, sourcePath }) {
 
 export { getInfo, platform, TAURI_VERSION };
 
-function defaultAndroidArtifacts(cwd, debug) {
+function defaultAndroidArtifacts(cwd, debug, targets) {
   const buildType = debug ? "debug" : "release";
   const apkName = debug ? `app-universal-${buildType}.apk` : null;
   const aabName = debug ? "debug" : "release";
   const aabDir = debug ? "universalDebug" : "universalRelease";
   const out = [];
-  if (apkName) {
-    out.push(fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/${apkName}`));
-  } else {
-    out.push(
-      fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release.apk`),
-      fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release-unsigned.apk`),
-    );
+  if (targets.includes("apk")) {
+    if (apkName) {
+      out.push(fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/${apkName}`));
+    } else {
+      out.push(
+        fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release.apk`),
+        fs.resolve(cwd, `gen/android/app/build/outputs/apk/universal/${buildType}/app-universal-release-unsigned.apk`),
+      );
+    }
   }
-  out.push(fs.resolve(cwd, `gen/android/app/build/outputs/bundle/${aabDir}/app-universal-${aabName}.aab`));
+  if (targets.includes("aab")) {
+    out.push(fs.resolve(cwd, `gen/android/app/build/outputs/bundle/${aabDir}/app-universal-${aabName}.aab`));
+  }
   return out;
 }
 

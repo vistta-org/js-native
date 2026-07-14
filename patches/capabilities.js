@@ -29,7 +29,7 @@ export async function patchCapabilities(targetDir, config) {
   const capPath = fs.resolve(targetDir, "capabilities", "default.json");
   if (!fs.existsSync(capPath)) return;
 
-  const target = config?.target;
+  const target = config?.platform;
   const enabledPlugins = target ? pluginsFor(target) : PLUGINS;
 
   const seen = new Set();

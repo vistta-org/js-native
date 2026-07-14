@@ -22,7 +22,7 @@ import { Tauri } from "@vistta/js-runtime";
 
 // Launches `tauri dev` for desktop, `tauri android dev` for Android.
 await Tauri.run({
-  target: "desktop", // required: "desktop" | "android" | "ios"
+  platform: "desktop", // required: "desktop" | "android" | "ios" | "linux" | "windows" | "macos"
   buildDir: "./build", // src-tauri root for this app
   app: {
     id: "com.example.myapp",
@@ -46,13 +46,15 @@ import { run, build } from "@vistta/js-runtime";
 Generates / refreshes `src-tauri/` files from the config, then runs the platform-specific
 Tauri dev loop:
 
-- `target: "desktop"` → `npx tauri dev`
-- `target: "android"` → `npx tauri android dev`
-- `target: "ios"` → not yet supported
+- `platform: "desktop"` (or `"linux"`/`"windows"`/`"macos"`) → `npx tauri dev`
+- `platform: "android"` → `npx tauri android dev`
+- `platform: "ios"` → not yet supported
+
+`"windows"` and `"macos"` auto-set `crossCompile` to the appropriate Rust target triple; `"linux"` and `"desktop"` build natively. Cross-compilation is automatic — no extra flags needed.
 
 ```javascript
 await Tauri.run({
-  target: "desktop",
+  platform: "desktop",
   buildDir: "./build",
   app: {
     id: "com.example.app",
@@ -75,11 +77,11 @@ await Tauri.run({
 ### `Tauri.build(config)`
 
 Builds the Tauri app for distribution (Android APK, Windows installer, etc.).
-Same config shape as `run`. The `target` field is required.
+Same config shape as `run`. The `platform` field is required.
 
 ```javascript
 await Tauri.build({
-  target: "android",
+  platform: "android",
   buildDir: "./build",
   app: { id: "com.example.app", name: "My App" },
 });
@@ -92,7 +94,7 @@ forking the runtime. All are optional and deep-merged into the defaults.
 
 ```javascript
 await Tauri.build({
-  target: "desktop",
+  platform: "desktop",
   buildDir: "./build",
   app: { id: "com.example.app" },
 
@@ -143,7 +145,7 @@ The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to th
 ```javascript
 import { build, artifactName } from "@vistta/js-runtime";
 
-const { type, paths } = await build({ target: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
+const { type, paths } = await build({ platform: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
 for (const sourcePath of paths) {
   const name = artifactName({ appName: "My App", version: "1.0.0", type, sourcePath });
   // → "My-App-1.0.0.apk" / "My-App-1.0.0.aab" (android)
@@ -167,22 +169,16 @@ Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName`
 
 ## Cross-compilation
 
-The runtime supports cross-compiling desktop builds to a different OS target
-via the `crossCompile` config field (or `--cross-compile` CLI flag). This is
-useful for producing Windows installers (`.msi`/`.exe`) from a Linux build
-host, e.g. in a CI container.
-
-The CLI exposes `linux`, `windows`, and `macos` targets which map to the
-runtime's `desktop` target — `windows` sets `crossCompile` to
-`x86_64-pc-windows-gnu`, `linux` builds natively, and `macos` is not
-supported on Linux. At the runtime level, only `desktop`/`android`/`ios`
-are used.
+The runtime accepts `linux`, `windows`, and `macos` as platform values — they
+map to the internal `desktop` platform, with `windows` auto-setting
+`crossCompile` to `x86_64-pc-windows-gnu` and `macos` to `x86_64-apple-darwin`.
+`linux` and `desktop` build natively. Cross-compilation is automatic — no extra
+flags needed.
 
 ```javascript
 await Tauri.build({
-  target: "desktop",
+  platform: "windows",
   buildDir: "./build",
-  crossCompile: "x86_64-pc-windows-gnu",
   app: { id: "com.example.app", name: "My App" },
 });
 ```
@@ -200,6 +196,56 @@ x86_64-pc-windows-gnu`) and the cross-linker / bundler tools must be available
 (MinGW-w64 for linking, NSIS for `.exe` setup installers, WiX under Wine for
 `.msi`). See the `Dockerfile.build` in the Connect app for a working example of
 a Linux container that builds Linux + Android + Windows artifacts.
+
+## Bundle targets
+
+The `target` config field controls which bundle format(s) are produced for the
+current platform. It accepts a single value, a list, or a per-platform object.
+When omitted, the platform defaults are used (Android: APK + AAB, iOS: IPA,
+desktop: all installers).
+
+```javascript
+await Tauri.build({
+  platform: "android",
+  buildDir: "./build",
+  target: "apk", // only APK (skip AAB)
+  app: { id: "com.example.app", name: "My App" },
+});
+```
+
+Per-platform object (useful in `app` mode where multiple platforms are built in
+one invocation):
+
+```javascript
+await Tauri.build({
+  platform: "android",
+  buildDir: "./build",
+  target: { android: "apk", desktop: ["msi", "nsis"] },
+  app: { id: "com.example.app", name: "My App" },
+});
+```
+
+Available values per platform:
+
+| Platform | Values                                                                      | Default       |
+| -------- | --------------------------------------------------------------------------- | ------------- |
+| Android  | `apk`, `aab`                                                                | `apk` + `aab` |
+| iOS      | `ipa`, `app`                                                                | `ipa`         |
+| Desktop  | `msi`, `nsis` (alias: `exe`), `deb`, `rpm`, `appimage`, `app`, `dmg`, `all` | `all`         |
+
+The CLI exposes this via `--target`:
+
+```bash
+# Flat — applies to the current platform
+vistta build [folder] android --target apk
+vistta build [folder] windows --target nsis
+
+# Comma-separated list
+vistta build [folder] android --target apk,aab
+
+# Per-platform assignments (for `app` mode)
+vistta build [folder] app --target android=apk,windows=nsis
+```
 
 ## Android status
 

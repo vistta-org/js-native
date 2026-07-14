@@ -53,6 +53,62 @@ export function resolveAppId(config) {
   return config?.app?.id || "org.vistta.app";
 }
 
+const DEFAULT_TARGETS = {
+  android: ["apk", "aab"],
+  ios: ["ipa"],
+  desktop: ["all"],
+};
+
+/**
+ * Maps CLI platform names to runtime platform + optional cross-compile triple.
+ * "windows" and "linux" map to "desktop"; "windows" auto-sets crossCompile
+ * to the MinGW target so Windows installers are cross-compiled from any host.
+ * "macos" is not supported yet (like "ios"). "desktop" is kept as a hidden
+ * alias for backward compatibility — it builds for the host platform natively.
+ *
+ * @param {string} platform - Platform name (linux, windows, macos, desktop, android, ios)
+ * @returns {{platform: "desktop"|"android"|"ios", crossCompile?: string}}
+ */
+const PLATFORM_MAP = {
+  linux: { platform: "desktop" },
+  windows: { platform: "desktop", crossCompile: "x86_64-pc-windows-gnu" },
+  macos: { platform: "desktop", crossCompile: "x86_64-apple-darwin" },
+  desktop: { platform: "desktop" },
+  android: { platform: "android" },
+  ios: { platform: "ios" },
+};
+export function resolvePlatform(platform) {
+  return PLATFORM_MAP[platform] || { platform };
+}
+
+/**
+ * Resolves the bundle format list for a given platform from `config.target`.
+ * Accepts a flat value/list (applies to the current platform) or a per-platform
+ * object keyed by platform name. When using a per-platform object, both the
+ * resolved runtime platform ("desktop"/"android"/"ios") and the original CLI
+ * platform name ("linux"/"windows"/"macos") are checked. Returns the platform's
+ * default list when `config.target` is absent.
+ *
+ * @param {object} config
+ * @param {"desktop"|"android"|"ios"} platform
+ * @returns {string[]}
+ */
+export function resolveTargets(config, platform) {
+  const t = config?.target;
+  if (t == null) return DEFAULT_TARGETS[platform] || [];
+  if (typeof t === "string") return [t];
+  if (Array.isArray(t)) return t;
+  if (typeof t === "object") {
+    // Check the resolved platform name first, then the original CLI platform
+    // name (e.g. "windows" → "desktop" but the user may have keyed by "windows").
+    const cliPlatform = config?.__cliPlatform;
+    const v = t[platform] ?? (cliPlatform ? t[cliPlatform] : null);
+    if (v == null) return DEFAULT_TARGETS[platform] || [];
+    return typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
+  }
+  return [];
+}
+
 /**
  * Returns the actual applicationId the built app will have at runtime.
  * In development a `.dev` suffix is appended so the resulting APK installs
