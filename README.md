@@ -6,7 +6,7 @@ Unified runtime for building cross-platform applications (mobile, desktop, web) 
 
 - **Single codebase** for all platforms: Android, macOS, Windows, Linux, and Web (iOS planned)
 - **JS-only for app developers** — no Rust required; the runtime owns `src-tauri/`
-- **Built-in integrations**: Clipboard, Dialog, Filesystem, Haptics, Notification, Shell
+- **Built-in integrations**: Clipboard, Dialog, Filesystem, Haptics, Notification, Shell, plus `System` (app metadata + path resolution from the Tauri core API)
 - **Smaller bundle than Electron** (Tauri ships a webview, not a full browser)
 
 ## Installation
@@ -347,8 +347,10 @@ await Tauri.build({
 Import plugin namespaces from `@vistta/js-runtime/plugins`:
 
 ```javascript
-import { Clipboard, Dialog, Filesystem, Haptics, Notification, Scheduler, Shell } from "@vistta/js-runtime/plugins";
+import { Clipboard, Dialog, Filesystem, Haptics, Notification, Scheduler, Shell, System } from "@vistta/js-runtime/plugins";
 ```
+
+`System` re-exports the Tauri core API modules (`@tauri-apps/api/app` and `@tauri-apps/api/path`) under one flat namespace — e.g. `System.getVersion()` and `System.downloadDir()`.
 
 ### Notifications
 
@@ -382,6 +384,23 @@ import { Haptics } from "@vistta/js-runtime/plugins";
 await Haptics.impactFeedback({ style: "medium" });
 await Haptics.vibrate(100);
 ```
+
+### System
+
+`System` groups the Tauri core API for app metadata and path resolution into
+one flat namespace (the two modules have no overlapping export names):
+
+- App info — `getVersion`, `getName`, `getTauriVersion`, `getIdentifier`, etc.
+- Path helpers — `downloadDir`, `appDataDir`, `join`, `resolve`, `sep`, etc.
+
+```javascript
+import { System } from "@vistta/js-runtime/plugins";
+const version = await System.getVersion();
+const dir = await System.downloadDir();
+const dest = await System.join(dir, "update.exe");
+```
+
+The runtime's capabilities include `core:path:allow-download-dir` by default so `System.downloadDir()` works out of the box (the fs scope already grants `$DOWNLOAD/**`).
 
 ### Scheduler
 
