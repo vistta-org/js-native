@@ -3,8 +3,6 @@ import { PLUGINS, pluginsFor } from "../plugins.config.js";
 import { writeIfChanged } from "../utils/index.js";
 
 // Core permissions always emitted (window control + Tauri runtime defaults).
-// `core:path:allow-download-dir` is included so the runtime's `Path.downloadDir()`
-// re-export works out of the box — the fs scope already grants `$DOWNLOAD/**`.
 const CORE_PERMISSIONS = [
   "core:default",
   "core:window:default",
@@ -14,7 +12,6 @@ const CORE_PERMISSIONS = [
   "core:window:allow-close",
   "core:window:allow-set-fullscreen",
   "core:window:allow-set-always-on-top",
-  "core:path:allow-download-dir",
 ];
 
 /**

@@ -400,7 +400,7 @@ const dir = await System.downloadDir();
 const dest = await System.join(dir, "update.exe");
 ```
 
-The runtime's capabilities include `core:path:allow-download-dir` by default so `System.downloadDir()` works out of the box (the fs scope already grants `$DOWNLOAD/**`).
+`System.downloadDir()` works out of the box — path resolution is part of the Tauri core API and doesn't require a separate permission. The fs scope already grants `$DOWNLOAD/**` for actual file access.
 
 ### Scheduler
 
