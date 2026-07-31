@@ -74,6 +74,11 @@ await Tauri.run({
 });
 ```
 
+> **Inspector / DevTools.** The Tauri `devtools` Cargo feature (which gates
+> whether the webview inspector can be opened at all) is only enabled in
+> development builds (`NODE_ENV=development`). Release builds compile without
+> it, so the inspector cannot be activated in a shipped desktop binary.
+
 ### `Tauri.build(config)`
 
 Builds the Tauri app for distribution (Android APK, Windows installer, etc.).

@@ -2,6 +2,8 @@ import fs from "@vistta/fs";
 import { initCall, PLUGINS } from "../plugins.config.js";
 import { getInfo, resolveApplicationId, writeIfChanged } from "../utils/index.js";
 
+const DEV = process.env.NODE_ENV === "development";
+
 /**
  * Writes src/main.rs in full. The runtime owns this file end-to-end; there's
  * nothing to merge with the template baseline. The template's main.rs (with its
@@ -153,7 +155,12 @@ export async function patchCargoToml(targetDir, config) {
   // handled by Cargo's own target/debug/ vs target/release/ split.
 
   const background = !!config?.app?.background;
-  const tauriFeatures = background ? `"devtools", "tray-icon"` : `"devtools"`;
+  // The `devtools` Cargo feature gates whether the webview inspector can be
+  // opened at all (on WebView2 it toggles `AreDevToolsEnabled`). It must only
+  // be enabled in development builds so release builds cannot activate the
+  // inspector. `tray-icon` is desktop-only and needed whenever background mode
+  // is on, regardless of dev/release.
+  const tauriFeatures = [...(DEV ? ["devtools"] : []), ...(background ? ["tray-icon"] : [])].map((f) => `"${f}"`).join(", ");
   const sharedDeps = [
     `serde = { version = "1", features = ["derive"] }`,
     `serde_json = "1"`,
