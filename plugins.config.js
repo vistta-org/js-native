@@ -18,7 +18,19 @@ export const VISTTA_PLUGIN = {
 
 export const PLUGINS = [
   VISTTA_PLUGIN,
-  { id: "clipboard-manager", crate: "tauri-plugin-clipboard-manager", version: "2" },
+  {
+    id: "clipboard-manager",
+    crate: "tauri-plugin-clipboard-manager",
+    version: "2",
+    permissions: [
+      "clipboard-manager:allow-read-text",
+      "clipboard-manager:allow-write-text",
+      "clipboard-manager:allow-read-image",
+      "clipboard-manager:allow-write-image",
+      "clipboard-manager:allow-write-html",
+      "clipboard-manager:allow-clear",
+    ],
+  },
   {
     id: "dialog",
     crate: "tauri-plugin-dialog",

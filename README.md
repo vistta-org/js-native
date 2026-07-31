@@ -577,7 +577,7 @@ See `plugins.config.js` for the canonical list. As of writing:
 | Plugin                           | Purpose                                                                                   |
 | -------------------------------- | ----------------------------------------------------------------------------------------- |
 | `tauri-plugin-vistta`            | Android background scheduler, fetch, and socket bridge (runtime-owned, at `rust/plugin/`) |
-| `tauri-plugin-clipboard-manager` | Clipboard access                                                                          |
+| `tauri-plugin-clipboard-manager` | Clipboard access (read/write text, images, HTML; clear)                                   |
 | `tauri-plugin-dialog`            | Native dialogs                                                                            |
 | `tauri-plugin-fs`                | File system access                                                                        |
 | `tauri-plugin-haptics`           | Haptic feedback                                                                           |
