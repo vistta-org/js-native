@@ -1,9 +1,11 @@
 /**
  * Cross-platform clipboard API with background-read support on Android.
  *
- * Re-exports the Tauri clipboard-manager commands (`readText`, `writeText`,
- * `readImage`, `writeImage`, `writeHtml`, `clear`) so callers can import the
- * whole surface from one place: `import { Clipboard } from "@vistta/js-runtime/plugins"`.
+ * Extends the Tauri clipboard-manager surface (`readText`, `writeText`,
+ * `readImage`, `writeImage`, `writeHtml`, `clear`) with a background-watch
+ * API. Everything is re-exported as named exports so
+ * `import { Clipboard } from "@vistta/js-runtime/plugins"` gives a flat
+ * namespace: `Clipboard.readText()`, `Clipboard.watchBackground()`, etc.
  *
  * Background watching on Android 10+:
  *   Android restricts `ClipboardManager.primaryClip` reads to the foreground
@@ -26,13 +28,15 @@
  * - iOS — polling via `setInterval` (subject to iOS background limits).
  */
 
-import * as TauriClipboard from "@tauri-apps/plugin-clipboard-manager";
 import { clearBackgroundInterval, setBackgroundInterval } from "./scheduler.js";
 
-// Re-export the Tauri clipboard-manager commands under the `Clipboard`
-// namespace so callers can do `import { Clipboard } from
-// "@vistta/js-runtime/plugins"` and get `Clipboard.readText()`, etc.
-export { TauriClipboard as Clipboard };
+// Re-export the Tauri clipboard-manager commands as named exports so they
+// flatten into the `Clipboard` namespace via `export * as Clipboard` in
+import { clear, readImage, readText, writeHtml, writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+// Re-export so `export * as Clipboard` in `index.js` flattens the Tauri
+// commands into the `Clipboard` namespace alongside the background methods.
+export { clear, readImage, readText, writeHtml, writeImage, writeText };
 
 let watcher = null;
 let lastHash = null;
@@ -113,7 +117,7 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
   const id = setBackgroundInterval(async () => {
     let text;
     try {
-      text = await TauriClipboard.readText();
+      text = await readText();
     } catch {
       return;
     }
