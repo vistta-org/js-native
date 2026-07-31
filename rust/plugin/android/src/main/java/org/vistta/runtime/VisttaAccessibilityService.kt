@@ -29,6 +29,7 @@
 package org.vistta.runtime
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.view.accessibility.AccessibilityEvent
@@ -45,7 +46,20 @@ class VisttaAccessibilityService : AccessibilityService() {
         if (cm != null) {
             clipboardManager = cm
             val l = ClipboardManager.OnPrimaryClipChangedListener {
-                VisttaClipboard.onClipChanged()
+                // Read primaryClip HERE, inside the service callback. The
+                // accessibility service's process has the clipboard-read
+                // privilege; reading from the application context in
+                // VisttaClipboard does NOT. So we extract the text here and
+                // hand only the string to VisttaClipboard for delivery.
+                val clip: ClipData? = try {
+                    cm.primaryClip
+                } catch (_: Throwable) {
+                    null
+                }
+                if (clip == null || clip.itemCount == 0) return@OnPrimaryClipChangedListener
+                val item = clip.getItemAt(0)
+                val text = item?.text?.toString() ?: return@OnPrimaryClipChangedListener
+                VisttaClipboard.onClipChanged(text)
             }
             listener = l
             try {

@@ -27,8 +27,6 @@
 
 package org.vistta.runtime
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -82,22 +80,15 @@ object VisttaClipboard {
     }
 
     /**
-     * Called from `VisttaAccessibilityService.onPrimaryClipChanged`. Reads
-     * the current clip text and delivers it to the webview. Runs on the
-     * main thread (ClipboardManager access must be on a thread with a
-     * Looper; the accessibility service posts here).
+     * Called from `VisttaAccessibilityService.onPrimaryClipChanged` with the
+     * text already read from `ClipboardManager.primaryClip` by the service
+     * (which has the accessibility clipboard-read privilege). This object
+     * only delivers the text into the webview — it does NOT read
+     * `primaryClip` itself, because the application context it holds does
+     * not carry the accessibility privilege on Android 10+.
      */
-    fun onClipChanged() {
-        val ctx = appContext?.get() ?: return
-        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        val clip: ClipData? = try {
-            cm.primaryClip
-        } catch (_: Throwable) {
-            null
-        }
-        if (clip == null || clip.itemCount == 0) return
-        val item = clip.getItemAt(0) ?: return
-        val text = item.text?.toString() ?: return
+    fun onClipChanged(text: String) {
+        if (text.isEmpty()) return
         deliverClip(text, "text")
     }
 
