@@ -106,6 +106,16 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
       if (typeof text === "string" && text.length > 0) onClip(text);
     };
     window.addEventListener("background-clipboard", listener);
+    // Start a native poll loop as a reliability fallback. The
+    // OnPrimaryClipChangedListener may be deferred by the OS when the
+    // app is backgrounded; the native poll reads the clipboard via the
+    // accessibility service's privilege and delivers changes through the
+    // same `background-clipboard` event.
+    try {
+      b.startPoll(pollIntervalMs);
+    } catch {
+      /* ignore */
+    }
     watcher = "native";
     return stopBackground;
   }
@@ -140,7 +150,16 @@ export function stopBackground() {
     window.removeEventListener("background-clipboard", listener);
     listener = null;
   }
-  if (watcher && watcher !== "native") {
+  if (watcher === "native") {
+    const b = getBridge();
+    if (b) {
+      try {
+        b.stopPoll();
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (watcher) {
     clearBackgroundInterval(watcher);
   }
   watcher = null;

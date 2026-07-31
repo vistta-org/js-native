@@ -62,17 +62,20 @@ const DEFAULT_TARGETS = {
 /**
  * Maps CLI platform names to runtime platform + optional cross-compile triple.
  * "windows" and "linux" map to "desktop"; "windows" auto-sets crossCompile
- * to the MinGW target so Windows installers are cross-compiled from any host.
- * "macos" is not supported yet (like "ios"). "desktop" is kept as a hidden
- * alias for backward compatibility — it builds for the host platform natively.
+ * to the MinGW target so Windows installers are cross-compiled from a non-Windows
+ * host (e.g. Linux → Windows). When building *on* Windows, no crossCompile is
+ * set so the native MSVC toolchain is used. "macos" is not supported yet (like
+ * "ios"). "desktop" is kept as a hidden alias for backward compatibility — it
+ * builds for the host platform natively.
  *
  * @param {string} platform - Platform name (linux, windows, macos, desktop, android, ios)
  * @returns {{platform: "desktop"|"android"|"ios", crossCompile?: string}}
  */
+const host = platform();
 const PLATFORM_MAP = {
   linux: { platform: "desktop" },
-  windows: { platform: "desktop", crossCompile: "x86_64-pc-windows-gnu" },
-  macos: { platform: "desktop", crossCompile: "x86_64-apple-darwin" },
+  windows: { platform: "desktop", ...(host !== "win32" && { crossCompile: "x86_64-pc-windows-gnu" }) },
+  macos: { platform: "desktop", ...(host !== "darwin" && { crossCompile: "x86_64-apple-darwin" }) },
   desktop: { platform: "desktop" },
   android: { platform: "android" },
   ios: { platform: "ios" },

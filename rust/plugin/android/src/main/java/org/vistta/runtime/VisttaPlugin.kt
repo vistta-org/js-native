@@ -118,5 +118,15 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         fun openAccessibilitySettings() {
             VisttaClipboard.openAccessibilitySettings(activity)
         }
+
+        @JavascriptInterface
+        fun startPoll(intervalMs: Double) {
+            VisttaClipboard.startPoll(intervalMs.toLong())
+        }
+
+        @JavascriptInterface
+        fun stopPoll() {
+            VisttaClipboard.stopPoll()
+        }
     }
 }
