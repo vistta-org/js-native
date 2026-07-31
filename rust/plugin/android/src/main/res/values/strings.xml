@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="vistta_accessibility_description">Allows Vistta to read the system clipboard while the app is in the background, so clipboard entries can sync across your devices even when Vistta is not open. This service does not observe or interact with the screen; it only grants the clipboard-read privilege that Android 10+ reserves for accessibility services.</string>
+</resources>

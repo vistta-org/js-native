@@ -9,6 +9,10 @@
 //                     completes while the activity is paused.
 //   VisttaSocket    — open/close/emit Socket.IO connections that survive
 //                     backgrounding (see VisttaNetwork).
+//   VisttaClipboard — background clipboard sync. On Android 10+ only an
+//                     enabled AccessibilityService may read the clipboard
+//                     in the background, so clip content is delivered from
+//                     VisttaAccessibilityService via VisttaClipboard.
 //
 // The plugin also creates the default notification channel used by the
 // Tauri notification plugin, and publishes the webview reference to
@@ -39,9 +43,12 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         VisttaService.attachWebView(webView)
         VisttaNetwork.attachWebView(webView)
         VisttaNetwork.attachContext(activity)
+        VisttaClipboard.attachWebView(webView)
+        VisttaClipboard.attachContext(activity)
         webView.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
         webView.addJavascriptInterface(visttaSocketBridge, "VisttaSocket")
+        webView.addJavascriptInterface(visttaClipboardBridge, "VisttaClipboard")
     }
 
     private fun ensureDefaultNotificationChannel() {
@@ -98,6 +105,18 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         @JavascriptInterface
         fun emit(id: String, name: String, argsJson: String) {
             VisttaNetwork.emitSocket(id, name, argsJson)
+        }
+    }
+
+    private val visttaClipboardBridge = object {
+        @JavascriptInterface
+        fun isAccessibilityEnabled(): Boolean {
+            return VisttaClipboard.isAccessibilityEnabled()
+        }
+
+        @JavascriptInterface
+        fun openAccessibilitySettings() {
+            VisttaClipboard.openAccessibilitySettings(activity)
         }
     }
 }

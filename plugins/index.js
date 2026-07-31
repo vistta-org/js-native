@@ -6,17 +6,22 @@
 // `@tauri-apps/api/path`) under one namespace — e.g. `System.getVersion()`
 // and `System.downloadDir()`. See `./system.js` for details.
 //
+// `Clipboard` re-exports the Tauri clipboard-manager commands and adds a
+// background-watch surface (`watchBackground`, `stopBackground`,
+// `isAccessibilityEnabled`, `openAccessibilitySettings`) backed by the
+// `VisttaAccessibilityService` on Android 10+. See `./clipboard.js`.
+//
 // Note: `Os` is intentionally NOT re-exported. The `@tauri-apps/plugin-os`
 // module declares top-level `function platform()` which, in a classic-script
 // bundle, collides with `window.platform` (set by the Vistta app to indicate
 // the runtime platform). Import OS utilities directly from
 // `@tauri-apps/plugin-os` if needed.
-export * as Clipboard from "@tauri-apps/plugin-clipboard-manager";
 export * as Dialog from "@tauri-apps/plugin-dialog";
 export * as Filesystem from "@tauri-apps/plugin-fs";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
 export * as Shell from "@tauri-apps/plugin-shell";
+export * as Clipboard from "./clipboard.js";
 export * as Net from "./net/index.js";
 export * as Scheduler from "./scheduler.js";
 export * as System from "./system.js";

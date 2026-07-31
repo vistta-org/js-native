@@ -268,11 +268,25 @@ background scheduler (see [Scheduler](#scheduler) below).
     crash loop.
   - `VisttaNetwork` — the OkHttp client and Socket.IO Java client used for
     background fetch and background sockets.
-  - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` JavascriptInterface
-    bridges injected into the webview.
+  - `VisttaClipboard` — background clipboard sync. Android 10+ (API 29+)
+    restricts `ClipboardManager.primaryClip` reads to the foreground app,
+    the default IME, or an enabled `AccessibilityService`; a foreground
+    service alone is **not** enough. `VisttaAccessibilityService` (in the
+    same package) is the AccessibilityService that grants the read
+    privilege; `VisttaClipboard` delivers the clip text into the webview
+    via a `background-clipboard` CustomEvent. The user must enable the
+    service manually under Settings → Accessibility (it cannot be granted
+    programmatically); `Clipboard.isAccessibilityEnabled()` /
+    `Clipboard.openAccessibilitySettings()` let the JS side detect and
+    prompt. See [Clipboard](#clipboard) below.
+  - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` /
+    `VisttaClipboard` JavascriptInterface bridges injected into the
+    webview.
   - A default notification channel for the notification plugin.
   - The `<uses-permission>`s (`POST_NOTIFICATIONS`, `VIBRATE`, `WAKE_LOCK`,
-    `FOREGROUND_SERVICE*`) and `<service>` entry in the plugin's own
+    `FOREGROUND_SERVICE*`) and `<service>` entries (the foreground
+    `VisttaService` and the `VisttaAccessibilityService` bound to
+    `BIND_ACCESSIBILITY_SERVICE`) in the plugin's own
     `AndroidManifest.xml` — merged into the host app by Android's manifest
     merger, no host-file patching needed.
   - The `okhttp` and `socket.io-client` Maven deps in the plugin's own
@@ -484,6 +498,68 @@ Android. Limitations to be aware of:
   request via OkHttp, so CORS does not apply (this is the OS's HTTP
   client, not a browser fetch). Auth headers from the original request
   are forwarded.
+
+## Clipboard
+
+```javascript
+import { Clipboard } from "@vistta/js-runtime/plugins";
+
+// Read/write the system clipboard (Tauri clipboard-manager commands).
+await Clipboard.writeText("hello");
+const text = await Clipboard.readText();
+await Clipboard.clear();
+```
+
+### Background clipboard watching (Android 10+)
+
+Android 10 (API 29) restricts `ClipboardManager.primaryClip` reads to the
+foreground app, the default IME, or an enabled `AccessibilityService`. A
+foreground service — by itself — is **not** allowed to read the clipboard
+in the background. The runtime ships `VisttaAccessibilityService`, an
+AccessibilityService whose only purpose is to grant the background
+clipboard-read privilege; it does not observe accessibility events or
+touch the UI tree.
+
+`Clipboard.watchBackground(onClip)` delivers clipboard changes to a
+callback. On Android with the accessibility service enabled, it is driven
+by a native `OnPrimaryClipChangedListener` (true background, event-driven).
+On desktop, iOS, or Android with the service disabled, it falls back to
+polling `readText()` on a `setBackgroundInterval` (which only delivers while
+the app is foregrounded on Android 10+ without the service).
+
+```javascript
+import { Clipboard } from "@vistta/js-runtime/plugins";
+
+const stop = Clipboard.watchBackground((text) => {
+  console.log("clipboard changed:", text);
+  // ...push to sync...
+});
+// later
+stop();
+```
+
+**The user must enable the accessibility service once.** It cannot be
+granted programmatically. Detect and prompt:
+
+```javascript
+if (!Clipboard.isAccessibilityEnabled()) {
+  Clipboard.openAccessibilitySettings(); // opens Settings → Accessibility
+}
+```
+
+| Platform                   | Background reads                                             |
+| -------------------------- | ------------------------------------------------------------ |
+| Android + service enabled  | Native `OnPrimaryClipChangedListener` (true background)      |
+| Android + service disabled | Polling; reads return null while backgrounded                |
+| Desktop                    | Polling via `setInterval` (works in background)              |
+| iOS                        | Polling via `setInterval` (subject to iOS background limits) |
+
+> **Note:** enabling an AccessibilityService is a powerful permission. The
+> runtime's service is configured with `canRetrieveWindowContent="false"`
+> and no `accessibilityEventTypes` of interest; it exists solely for the
+> clipboard-read privilege. This is intended for sideloaded, power-user
+> builds; distributing an app that requests Accessibility on the Play
+> Store may trigger review.
 
 ## Platform Detection
 
