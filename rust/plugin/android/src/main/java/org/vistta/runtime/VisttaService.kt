@@ -37,6 +37,8 @@ class VisttaService : Service() {
         private const val ACTION_STOP_IF_EMPTY = "vistta.STOP_IF_EMPTY"
         private const val ACTION_SOCKET_OPENED = "vistta.SOCKET_OPENED"
         private const val ACTION_SOCKET_CLOSED = "vistta.SOCKET_CLOSED"
+        private const val ACTION_CLIPBOARD_START = "vistta.CLIPBOARD_START"
+        private const val ACTION_CLIPBOARD_STOP = "vistta.CLIPBOARD_STOP"
         const val EXTRA_ID = "id"
         const val EXTRA_INTERVAL_MS = "intervalMs"
 
@@ -52,6 +54,14 @@ class VisttaService : Service() {
         // is open, even when no timers are registered.
         @Volatile
         private var socketCount: Int = 0
+
+        // Number of active clipboard poll loops. Keeps the foreground
+        // service alive so the native poll (which reads the clipboard via
+        // the accessibility service) continues when the app is
+        // backgrounded. Without this, Android may kill the process when
+        // no timers/sockets are active, stopping the poll.
+        @Volatile
+        private var clipboardCount: Int = 0
 
         private val mainHandler = Handler(Looper.getMainLooper())
         private val timers = mutableMapOf<String, Runnable>()
@@ -89,6 +99,20 @@ class VisttaService : Service() {
 
         fun socketClosed(context: Context) {
             val intent = Intent(context, VisttaService::class.java).setAction(ACTION_SOCKET_CLOSED)
+            try { context.startService(intent) } catch (_: Throwable) {}
+        }
+
+        fun clipboardStart(context: Context) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_CLIPBOARD_START)
+            try {
+                context.startForegroundService(intent)
+            } catch (_: Throwable) {
+                // No permission / already running; best-effort.
+            }
+        }
+
+        fun clipboardStop(context: Context) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_CLIPBOARD_STOP)
             try { context.startService(intent) } catch (_: Throwable) {}
         }
 
@@ -132,10 +156,10 @@ class VisttaService : Service() {
             ACTION_CLEAR -> {
                 val id = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
                 cancelTimer(id)
-                if (timers.isEmpty() && socketCount == 0) stopSelf()
+                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
             }
             ACTION_STOP_IF_EMPTY -> {
-                if (timers.isEmpty() && socketCount == 0) stopSelf()
+                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
             }
             ACTION_SOCKET_OPENED -> {
                 startForegroundCompat()
@@ -143,7 +167,15 @@ class VisttaService : Service() {
             }
             ACTION_SOCKET_CLOSED -> {
                 if (socketCount > 0) socketCount--
-                if (timers.isEmpty() && socketCount == 0) stopSelf()
+                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
+            }
+            ACTION_CLIPBOARD_START -> {
+                startForegroundCompat()
+                clipboardCount++
+            }
+            ACTION_CLIPBOARD_STOP -> {
+                if (clipboardCount > 0) clipboardCount--
+                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
             }
         }
         return START_STICKY

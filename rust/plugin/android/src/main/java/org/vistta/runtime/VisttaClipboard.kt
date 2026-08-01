@@ -34,8 +34,6 @@
 
 package org.vistta.runtime
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -96,35 +94,39 @@ object VisttaClipboard {
         }
         pollRunnable = r
         mainHandler.postDelayed(r, pollIntervalMs)
+        // Keep the foreground service alive so the process isn't killed
+        // when the app is backgrounded (no timers/sockets may be active).
+        val ctx = appContext?.get()
+        if (ctx != null) VisttaService.clipboardStart(ctx)
     }
 
     /**
      * Stops the native poll loop.
      */
     fun stopPoll() {
+        val wasRunning = pollRunnable != null
         pollRunnable?.let { mainHandler.removeCallbacks(it) }
         pollRunnable = null
         lastDeliveredHash = null
+        // Release the foreground service ref so it can stop if no other
+        // timers/sockets/clipboard polls are active. Only send the stop
+        // intent if a poll was actually running (avoids spurious decrements).
+        if (wasRunning) {
+            val ctx = appContext?.get()
+            if (ctx != null) VisttaService.clipboardStop(ctx)
+        }
     }
 
     /**
-     * Reads the current clipboard text via the app context's
-     * ClipboardManager and delivers it if it changed since the last poll.
-     * The accessibility service grants the read privilege to the whole
-     * process, so this read succeeds in the background.
+     * Reads the current clipboard text via the accessibility service's
+     * ClipboardManager (which holds the clipboard-read privilege) and
+     * delivers it if it changed since the last poll. Reading from the
+     * application context would return null when backgrounded; the
+     * service's own context is the only one with the privilege.
      */
     private fun pollOnce() {
         if (!isAccessibilityEnabled()) return
-        val ctx = appContext?.get() ?: return
-        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-        val clip: ClipData? = try {
-            cm.primaryClip
-        } catch (_: Throwable) {
-            null
-        }
-        if (clip == null || clip.itemCount == 0) return
-        val item = clip.getItemAt(0) ?: return
-        val text = item.text?.toString() ?: return
+        val text = VisttaAccessibilityService.readClipboardText() ?: return
         if (text.isEmpty()) return
         val hash = text.hashCode().toString()
         if (hash == lastDeliveredHash) return

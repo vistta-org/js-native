@@ -39,8 +39,38 @@ class VisttaAccessibilityService : AccessibilityService() {
     private var clipboardManager: ClipboardManager? = null
     private var listener: ClipboardManager.OnPrimaryClipChangedListener? = null
 
+    companion object {
+        // Static reference so VisttaClipboard's poll loop can delegate
+        // primaryClip reads to the service instance (which holds the
+        // accessibility clipboard-read privilege). Cleared in onUnbind.
+        @Volatile
+        private var instance: VisttaAccessibilityService? = null
+
+        /**
+         * Reads the current clipboard text via the service's own
+         * ClipboardManager. Returns null if the service is not bound or
+         * the clip is empty. This read succeeds in the background because
+         * the accessibility service grants the privilege to its own
+         * context — unlike the application context used by
+         * VisttaClipboard, which returns null when backgrounded.
+         */
+        fun readClipboardText(): String? {
+            val svc = instance ?: return null
+            val cm = svc.clipboardManager ?: return null
+            val clip: ClipData? = try {
+                cm.primaryClip
+            } catch (_: Throwable) {
+                null
+            }
+            if (clip == null || clip.itemCount == 0) return null
+            val item = clip.getItemAt(0) ?: return null
+            return item.text?.toString()
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         VisttaClipboard.attachContext(applicationContext)
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (cm != null) {
@@ -82,6 +112,7 @@ class VisttaAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
+        instance = null
         val cm = clipboardManager
         val l = listener
         if (cm != null && l != null) {
