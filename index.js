@@ -253,11 +253,12 @@ export function artifactName({ appName, name, version, type, sourcePath }) {
       .trim();
   const includeType = /^(apk|exe)$/i.test(ext);
   const typeSeg = includeType ? `-${type}` : "";
+  const dev = DEV ? ".dev" : "";
   if (name) {
     if (safe(name) !== name) throw new Error(`Invalid artifact name "${name}". Example of a safe name: "${safe(name)}"`);
-    return `${name}${typeSeg}${ext}`;
+    return `${name}${typeSeg}${dev}${ext}`;
   }
-  return `${safe(appName) || "app"}${version ? `-${safe(version)}` : ""}${typeSeg}${ext}`.toLowerCase();
+  return `${safe(appName) || "app"}${version ? `-${safe(version)}` : ""}${typeSeg}${dev}${ext}`.toLowerCase();
 }
 
 export { getInfo, platform, TAURI_VERSION };

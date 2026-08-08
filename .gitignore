@@ -136,10 +136,11 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# Android/Gradle build artifacts (regenerate on every build)
-rust/plugin/android/build/
-rust/plugin/android/.tauri/
-rust/plugin/android/.gradle/
+# Android plugins: Tauri's per-plugin API project and Gradle metadata are
+# regenerated; compiled Android outputs are centralized under rust/.build/.
+rust/plugins/*/android/.tauri/
+rust/plugins/*/android/.gradle/
+rust/.build/
 
-# Rust target directory
-rust/plugin/target/
+# Rust target directories
+rust/plugins/*/target/

@@ -8,8 +8,8 @@
 //
 // `Clipboard` re-exports the Tauri clipboard-manager commands and adds a
 // background-watch surface (`watchBackground`, `stopBackground`,
-// `isAccessibilityEnabled`, `openAccessibilitySettings`) backed by the
-// `VisttaAccessibilityService` on Android 10+. See `./clipboard.js`.
+// `syncClipboard`) that automatically uses the privileged clipboard plugin
+// when Shizuku or Sui is already authorized. See `./clipboard.js`.
 //
 // Note: `Os` is intentionally NOT re-exported. The `@tauri-apps/plugin-os`
 // module declares top-level `function platform()` which, in a classic-script
@@ -23,5 +23,6 @@ export * as Notification from "@tauri-apps/plugin-notification";
 export * as Shell from "@tauri-apps/plugin-shell";
 export * as Clipboard from "./clipboard.js";
 export * as Net from "./net/index.js";
+export * as PrivilegedClipboard from "./privileged-clipboard.js";
 export * as Scheduler from "./scheduler.js";
 export * as System from "./system.js";

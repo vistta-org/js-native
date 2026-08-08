@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+layout.buildDirectory.set(rootProject.layout.projectDirectory.dir("../../../.build/core/android"))
+
 android {
     namespace = "org.vistta.runtime"
     compileSdk = 36

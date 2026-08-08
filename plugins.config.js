@@ -1,6 +1,6 @@
-// The runtime's own plugin crate. Lives at `rust/plugin/` inside this
+// The runtime's own plugin crate. Lives at `rust/plugins/core/` inside this
 // package and is wired into the generated Cargo.toml as a path dependency
-// pointing at `@vistta/js-runtime/rust/plugin`. On Android it registers the
+// pointing at `@vistta/js-runtime/rust/plugins/core`. On Android it registers the
 // Kotlin VisttaPlugin (foreground service + background fetch + socket
 // bridge); on desktop/iOS it is a no-op. `permissions: []` and `noCommands:
 // true` keep it out of the generated capabilities file — the plugin exposes
@@ -10,7 +10,17 @@ export const VISTTA_PLUGIN = {
   id: "vistta",
   crate: "tauri-plugin-vistta",
   version: "2",
-  path: "./rust/plugin",
+  path: "./rust/plugins/core",
+  platforms: ["android"],
+  permissions: [],
+  noCommands: true,
+};
+
+export const PRIVILEGED_CLIPBOARD_PLUGIN = {
+  id: "privileged-clipboard",
+  crate: "tauri-plugin-vistta-privileged-clipboard",
+  version: "1",
+  path: "./rust/plugins/privileged-clipboard",
   platforms: ["android"],
   permissions: [],
   noCommands: true,
@@ -18,6 +28,7 @@ export const VISTTA_PLUGIN = {
 
 export const PLUGINS = [
   VISTTA_PLUGIN,
+  PRIVILEGED_CLIPBOARD_PLUGIN,
   {
     id: "clipboard-manager",
     crate: "tauri-plugin-clipboard-manager",
