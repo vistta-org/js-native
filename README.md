@@ -293,6 +293,10 @@ background scheduler (see [Scheduler](#scheduler) below).
   `VisttaPrivilegedClipboard` JavaScript bridge.
 - `patchAndroidStrings` — keeps launcher label + activity title in sync with
   `tauri.conf.json`
+- `patchAndroidManifest` — sets the generated main activity to
+  `android:windowSoftInputMode="adjustNothing"` so the system neither pans
+  nor resizes the WebView when the soft keyboard opens; the JS
+  `visualViewport` bridge (`size=adaptive`) handles keyboard sizing entirely
 - `patchBuildTask` — rewrites Tauri 2.11.2's `BuildTask.kt` to call the
   `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
   the consumer's `package.json` doesn't need a `tauri` script
@@ -590,8 +594,9 @@ rust/                                   verbatim `tauri init` baseline at TAURI_
    `extraTauriConfig`.
 4. `patchCapabilities` writes `capabilities/default.json` from
    `plugins.config.js` + `extraCapabilities`.
-5. Android-only: `patchBuildTask`, `patchAndroidStrings`. These patch
-   Tauri's _generated_ host files that cannot be plugin-ized (BuildTask.kt
+5. Android-only: `patchBuildTask`, `patchAndroidManifest`,
+   `patchAndroidStrings`. These patch Tauri's _generated_ host files that
+   cannot be plugin-ized (BuildTask.kt, the main activity soft-input mode,
    and strings.xml launcher label). The dev/release `applicationId` split
    is handled natively by Tauri via `debugApplicationIdSuffix` in
    `tauri.conf.json` (set by `mergeConfig`) — no namespace/applicationId

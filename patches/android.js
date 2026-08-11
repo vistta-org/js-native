@@ -18,7 +18,8 @@ const STRINGS = { begin: "<!-- vistta:strings:begin -->", end: "<!-- vistta:stri
 //
 // The remaining host-file patches are `patchBuildTask` (rewrites the
 // generated BuildTask.kt to call the tauri binary directly instead of
-// `npm run -- tauri`) and `patchAndroidStrings` (launcher label sync).
+// `npm run -- tauri`), `patchAndroidManifest` (soft-keyboard resize mode),
+// and `patchAndroidStrings` (launcher label sync).
 // These patch Tauri's *generated* host files that cannot be plugin-ized.
 //
 // The namespace/applicationId re-alignment patch (`patchAppGradleNamespace`)
@@ -66,6 +67,20 @@ export async function patchBuildTask(targetDir, config) {
   content = content.replace(/val\s+args\s*=\s*listOf\(\s*"run"\s*,\s*"--"\s*,\s*"tauri"\s*,\s*/g, "val args = listOf(");
   content = content.replace(/val\s+args\s*=\s*listOf\(\s*"tauri"\s*,\s*/g, "val args = listOf(");
   await writeIfChanged(buildTaskPath, content);
+}
+
+export async function patchAndroidManifest(targetDir) {
+  const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
+  if (!fs.existsSync(manifestPath)) return;
+  let content = String(await fs.readFile(manifestPath, "utf8"));
+  const activity = /<activity\b(?=[^>]*android:name="(?:\.MainActivity|[^\"]*\.MainActivity)")[^>]*>/;
+  const match = content.match(activity)?.[0];
+  if (!match) return;
+  const patched = /android:windowSoftInputMode=/.test(match)
+    ? match.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustNothing"')
+    : match.replace(/>$/, '\n            android:windowSoftInputMode="adjustNothing">');
+  content = content.replace(activity, patched);
+  await writeIfChanged(manifestPath, content);
 }
 
 const SIGNING = { begin: "// vistta:signing:begin", end: "// vistta:signing:end" };

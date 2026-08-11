@@ -1,6 +1,7 @@
 import fs from "@vistta/fs";
 import {
   mergeConfig,
+  patchAndroidManifest,
   patchAndroidStrings,
   patchAppGradleSigning,
   patchBuildTask,
@@ -182,6 +183,7 @@ export async function build(config) {
       const androidGen = fs.resolve(cwd, "gen", "android");
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
       await patchBuildTask(cwd, config);
+      await patchAndroidManifest(cwd);
       await patchAndroidStrings(cwd, config);
       await patchAppGradleSigning(cwd, config);
       if (iconPath && fs.existsSync(iconPath))
