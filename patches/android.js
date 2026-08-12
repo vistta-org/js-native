@@ -19,7 +19,9 @@ const STRINGS = { begin: "<!-- vistta:strings:begin -->", end: "<!-- vistta:stri
 // The remaining host-file patches are `patchBuildTask` (rewrites the
 // generated BuildTask.kt to call the tauri binary directly instead of
 // `npm run -- tauri`), `patchAndroidManifest` (soft-keyboard resize mode),
-// and `patchAndroidStrings` (launcher label sync).
+// `patchMainActivity` (IME inset application so the WebView shrinks for the
+// keyboard below the DOM/Popover layer), and `patchAndroidStrings` (launcher
+// label sync).
 // These patch Tauri's *generated* host files that cannot be plugin-ized.
 //
 // The namespace/applicationId re-alignment patch (`patchAppGradleNamespace`)
@@ -76,11 +78,76 @@ export async function patchAndroidManifest(targetDir) {
   const activity = /<activity\b(?=[^>]*android:name="(?:\.MainActivity|[^\"]*\.MainActivity)")[^>]*>/;
   const match = content.match(activity)?.[0];
   if (!match) return;
+  // adjustResize makes Android report IME insets to the activity; the
+  // IME-inset listener added by patchMainActivity applies them as bottom
+  // padding to the WebView root so the WebView physically shrinks.
   const patched = /android:windowSoftInputMode=/.test(match)
-    ? match.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustNothing"')
-    : match.replace(/>$/, '\n            android:windowSoftInputMode="adjustNothing">');
+    ? match.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustResize"')
+    : match.replace(/>$/, '\n            android:windowSoftInputMode="adjustResize">');
   content = content.replace(activity, patched);
   await writeIfChanged(manifestPath, content);
+}
+
+const IME_MARKER = "// vistta:ime-insets";
+
+/**
+ * Rewrites Tauri's generated `MainActivity.kt` to apply system bar and IME
+ * (keyboard) insets as padding to the activity's root view. Combined with
+ * `android:windowSoftInputMode="adjustResize"` (set by `patchAndroidManifest`),
+ * this makes the native Android WebView physically shrink when the soft
+ * keyboard opens — below the DOM/Popover layer — so the browser layout and
+ * the native HTML Popover API adapt naturally without any JS compensation.
+ * Status bar insets are applied as top padding so non-fullscreen apps don't
+ * draw behind the status bar.
+ *
+ * Idempotent: recognises a previously-patched file via `IME_MARKER` and
+ * rewrites it in full. If Tauri changes the file's shape dramatically the
+ * patch silently no-ops — the build will then fail with a clear error from
+ * Gradle.
+ *
+ * The root view's background color is controlled by the `VisttaStatusBar`
+ * bridge in `VisttaPlugin.kt` (called from JS via `setStatusBarColor`).
+ */
+export async function patchMainActivity(targetDir, config) {
+  const appId = resolveAppId(config);
+  const packagePath = appId.replace(/\./g, "/");
+  const mainActivityPath = fs.resolve(
+    targetDir,
+    "gen",
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    packagePath,
+    "MainActivity.kt",
+  );
+  if (!fs.existsSync(mainActivityPath)) return;
+  const content = [
+    `package ${appId}`,
+    ``,
+    `import android.os.Bundle`,
+    `import androidx.activity.enableEdgeToEdge`,
+    `import androidx.core.view.ViewCompat`,
+    `import androidx.core.view.WindowInsetsCompat`,
+    ``,
+    `class MainActivity : TauriActivity() {`,
+    `  ${IME_MARKER}`,
+    `  override fun onCreate(savedInstanceState: Bundle?) {`,
+    `    enableEdgeToEdge()`,
+    `    super.onCreate(savedInstanceState)`,
+    `    val root = findViewById<android.view.View>(android.R.id.content)`,
+    `    ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->`,
+    `      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())`,
+    `      val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom`,
+    `      v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime))`,
+    `      insets`,
+    `    }`,
+    `  }`,
+    `}`,
+    ``,
+  ].join("\n");
+  await writeIfChanged(mainActivityPath, content);
 }
 
 const SIGNING = { begin: "// vistta:signing:begin", end: "// vistta:signing:end" };

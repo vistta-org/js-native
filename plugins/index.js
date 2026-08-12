@@ -26,3 +26,4 @@ export * as Net from "./net/index.js";
 export * as PrivilegedClipboard from "./privileged-clipboard.js";
 export * as Scheduler from "./scheduler.js";
 export * as System from "./system.js";
+export * as Theme from "./theme.js";

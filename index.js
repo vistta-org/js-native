@@ -8,6 +8,7 @@ import {
   patchCapabilities,
   patchCargoToml,
   patchLibRs,
+  patchMainActivity,
   patchMainRs,
 } from "./patches/index.js";
 import {
@@ -184,6 +185,7 @@ export async function build(config) {
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
       await patchBuildTask(cwd, config);
       await patchAndroidManifest(cwd);
+      await patchMainActivity(cwd, config);
       await patchAndroidStrings(cwd, config);
       await patchAppGradleSigning(cwd, config);
       if (iconPath && fs.existsSync(iconPath))

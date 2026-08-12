@@ -86,7 +86,6 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
 
   listener = (event) => {
     const text = event?.detail?.text;
-    console.log("[clipboard] background-clipboard event received, text length:", text?.length);
     if (typeof text === "string" && text.length > 0) onClip(text);
   };
   window.addEventListener("background-clipboard", listener);
@@ -98,7 +97,6 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
 
   const b = getClipboardBridge();
   if (b && isShizukuAuthorized()) {
-    console.log("[clipboard] watchBackground: using authorized Shizuku monitor");
     try {
       if (startMonitor(pollIntervalMs) === true) {
         watcher = "shizuku";

@@ -12,6 +12,8 @@ const CORE_PERMISSIONS = [
   "core:window:allow-close",
   "core:window:allow-set-fullscreen",
   "core:window:allow-set-always-on-top",
+  "core:window:allow-set-theme",
+  "core:window:allow-set-background-color",
 ];
 
 /**

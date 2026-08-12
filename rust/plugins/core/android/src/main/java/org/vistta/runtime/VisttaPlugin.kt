@@ -10,6 +10,8 @@
 //   VisttaSocket    — open/close/emit Socket.IO connections that survive
 //                     backgrounding (see VisttaNetwork).
 //   VisttaClipboard — foreground/manual clipboard sync.
+//   VisttaTheme     — set the status bar + root view background color and
+//                     control status bar icon appearance (light/dark).
 //
 // The plugin also creates the default notification channel used by the
 // Tauri notification plugin, and publishes the webview reference to
@@ -23,6 +25,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import app.tauri.annotation.TauriPlugin
@@ -45,6 +50,7 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
         webView.addJavascriptInterface(visttaSocketBridge, "VisttaSocket")
         webView.addJavascriptInterface(visttaClipboardBridge, "VisttaClipboard")
+        webView.addJavascriptInterface(visttaThemeBridge, "VisttaTheme")
     }
 
     private fun ensureDefaultNotificationChannel() {
@@ -108,6 +114,20 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         @JavascriptInterface
         fun syncClipboard(): Boolean {
             return VisttaClipboard.syncClipboard(activity)
+        }
+    }
+
+    private val visttaThemeBridge = object {
+        @JavascriptInterface
+        fun setColor(argb: Int, lightIcons: Boolean) {
+            Handler(Looper.getMainLooper()).post {
+                val root = activity.findViewById<View>(android.R.id.content) ?: return@post
+                root.setBackgroundColor(argb)
+                // Use WindowInsetsControllerCompat to control status bar icon appearance.
+                val window = activity.window ?: return@post
+                val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = !lightIcons
+            }
         }
     }
 }

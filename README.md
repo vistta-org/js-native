@@ -294,9 +294,18 @@ background scheduler (see [Scheduler](#scheduler) below).
 - `patchAndroidStrings` — keeps launcher label + activity title in sync with
   `tauri.conf.json`
 - `patchAndroidManifest` — sets the generated main activity to
-  `android:windowSoftInputMode="adjustNothing"` so the system neither pans
-  nor resizes the WebView when the soft keyboard opens; the JS
-  `visualViewport` bridge (`size=adaptive`) handles keyboard sizing entirely
+  `android:windowSoftInputMode="adjustResize"` so Android reports IME insets
+  to the activity
+- `patchMainActivity` — rewrites the generated `MainActivity.kt` to apply
+  system bar and IME (keyboard) insets as padding to the activity's root view,
+  so the native Android WebView physically shrinks when the soft keyboard opens
+  — below the DOM/Popover layer. The browser layout and the native HTML Popover
+  API adapt naturally without any JS compensation. Status bar insets are
+  applied as top padding so non-fullscreen apps don't draw behind the status
+  bar. Combined with `adjustResize` above, this makes the keyboard work like a
+  native app. The root view background color is controlled by the
+  `VisttaTheme` bridge (see `Theme` plugin below). On desktop, the `Theme`
+  plugin uses Tauri's `window.setTheme()` and `window.setBackgroundColor()`
 - `patchBuildTask` — rewrites Tauri 2.11.2's `BuildTask.kt` to call the
   `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
   the consumer's `package.json` doesn't need a `tauri` script
@@ -595,9 +604,10 @@ rust/                                   verbatim `tauri init` baseline at TAURI_
 4. `patchCapabilities` writes `capabilities/default.json` from
    `plugins.config.js` + `extraCapabilities`.
 5. Android-only: `patchBuildTask`, `patchAndroidManifest`,
-   `patchAndroidStrings`. These patch Tauri's _generated_ host files that
-   cannot be plugin-ized (BuildTask.kt, the main activity soft-input mode,
-   and strings.xml launcher label). The dev/release `applicationId` split
+   `patchMainActivity`, `patchAndroidStrings`. These patch Tauri's
+   _generated_ host files that cannot be plugin-ized (BuildTask.kt, the main
+   activity soft-input mode + IME inset handling, and strings.xml launcher
+   label). The dev/release `applicationId` split
    is handled natively by Tauri via `debugApplicationIdSuffix` in
    `tauri.conf.json` (set by `mergeConfig`) — no namespace/applicationId
    re-alignment or stale package-dir cleanup needed. The runtime's
