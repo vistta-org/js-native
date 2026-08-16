@@ -11,6 +11,10 @@
 // `syncClipboard`) that automatically uses the privileged clipboard plugin
 // when Shizuku or Sui is already authorized. See `./clipboard.js`.
 //
+// `Shell` re-exports `@tauri-apps/plugin-shell` and overrides `open` on
+// Android to route `.apk` files through the `VisttaInstaller` bridge.
+// See `./shell.js`.
+//
 // Note: `Os` is intentionally NOT re-exported. The `@tauri-apps/plugin-os`
 // module declares top-level `function platform()` which, in a classic-script
 // bundle, collides with `window.platform` (set by the Vistta app to indicate
@@ -20,10 +24,10 @@ export * as Dialog from "@tauri-apps/plugin-dialog";
 export * as Filesystem from "@tauri-apps/plugin-fs";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
-export * as Shell from "@tauri-apps/plugin-shell";
 export * as Clipboard from "./clipboard.js";
 export * as Net from "./net/index.js";
 export * as PrivilegedClipboard from "./privileged-clipboard.js";
 export * as Scheduler from "./scheduler.js";
+export * as Shell from "./shell.js";
 export * as System from "./system.js";
 export * as Theme from "./theme.js";

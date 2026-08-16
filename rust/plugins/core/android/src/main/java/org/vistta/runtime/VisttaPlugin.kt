@@ -12,6 +12,8 @@
 //   VisttaClipboard — foreground/manual clipboard sync.
 //   VisttaTheme     — set the status bar + root view background color and
 //                     control status bar icon appearance (light/dark).
+//   VisttaInstaller — launch the system package installer for a local APK
+//                     (self-update flow; see VisttaInstaller).
 //
 // The plugin also creates the default notification channel used by the
 // Tauri notification plugin, and publishes the webview reference to
@@ -46,11 +48,13 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         VisttaNetwork.attachWebView(webView)
         VisttaNetwork.attachContext(activity)
         VisttaClipboard.attachWebView(webView)
+        VisttaInstaller.attachActivity(activity)
         webView.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
         webView.addJavascriptInterface(visttaSocketBridge, "VisttaSocket")
         webView.addJavascriptInterface(visttaClipboardBridge, "VisttaClipboard")
         webView.addJavascriptInterface(visttaThemeBridge, "VisttaTheme")
+        webView.addJavascriptInterface(VisttaInstaller, "VisttaInstaller")
     }
 
     private fun ensureDefaultNotificationChannel() {

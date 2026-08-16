@@ -276,13 +276,17 @@ background scheduler (see [Scheduler](#scheduler) below).
   - `VisttaClipboard` — standard foreground clipboard operations and manual
     sync. Android limits normal clipboard reads to the focused app.
   - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` /
-    `VisttaClipboard` JavascriptInterface bridges injected into the
-    webview.
+    `VisttaClipboard` / `VisttaInstaller` JavascriptInterface bridges injected
+    into the webview.
   - A default notification channel for the notification plugin.
   - The `<uses-permission>`s (`POST_NOTIFICATIONS`, `VIBRATE`, `WAKE_LOCK`,
-    `FOREGROUND_SERVICE*`) and foreground `VisttaService` entry in the
-    plugin's own `AndroidManifest.xml` — merged into the host app by
-    Android's manifest merger, no host-file patching needed.
+    `FOREGROUND_SERVICE*`, `REQUEST_INSTALL_PACKAGES`) and foreground
+    `VisttaService` entry in the plugin's own `AndroidManifest.xml` — merged
+    into the host app by Android's manifest merger, no host-file patching
+    needed. `VisttaInstaller` (the APK installer bridge) uses the app's
+    `FileProvider` (authorities `${applicationId}.fileprovider`, declared in
+    the generated host manifest) to share the downloaded APK with the system
+    package installer.
   - The `okhttp` and `socket.io-client` Maven deps in the plugin's own
     `build.gradle.kts`.
     On desktop/iOS the plugin is a no-op.
@@ -427,6 +431,26 @@ const dest = await System.join(dir, "update.exe");
 ```
 
 `System.downloadDir()` works out of the box — path resolution is part of the Tauri core API and doesn't require a separate permission. The fs scope already grants `$DOWNLOAD/**` for actual file access.
+
+### Shell
+
+`Shell` re-exports the Tauri `@tauri-apps/plugin-shell` surface (`Command`,
+`open`, etc.) and overrides `open` on Android: when `path` points to a local
+`.apk` file, the system package installer is launched via the
+`VisttaInstaller` JavascriptInterface bridge (injected by `VisttaPlugin`),
+which converts the file path to a `content://` URI via the app's
+`FileProvider` and fires `ACTION_VIEW` with the APK MIME type. This means
+`Shell.open("/path/to/update.apk")` works uniformly across desktop and
+Android — the caller does not need to branch by platform.
+
+Requires the `REQUEST_INSTALL_PACKAGES` permission (declared in the core
+plugin's `AndroidManifest.xml`, merged into the host app at build time).
+
+```javascript
+import { Shell } from "@vistta/js-runtime/plugins";
+await Shell.open("/path/to/update.apk");
+await Shell.open("https://github.com/vistta/vistta");
+```
 
 ### Scheduler
 
