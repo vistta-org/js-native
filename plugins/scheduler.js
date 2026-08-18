@@ -142,6 +142,7 @@ export function clearBackgroundTimeout(id) {
 // --- Internals ---
 
 function isMobile() {
+  // @ts-ignore
   return typeof window !== "undefined" && window.platform === "mobile";
 }
 

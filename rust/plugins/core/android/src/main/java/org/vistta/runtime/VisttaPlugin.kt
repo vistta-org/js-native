@@ -14,6 +14,9 @@
 //                     control status bar icon appearance (light/dark).
 //   VisttaInstaller — launch the system package installer for a local APK
 //                     (self-update flow; see VisttaInstaller).
+//   VisttaShortcuts — publish dynamic launcher shortcuts (ShortcutManager)
+//                     and dispatch launch-action intents into the webview
+//                     (see VisttaShortcuts).
 //
 // The plugin also creates the default notification channel used by the
 // Tauri notification plugin, and publishes the webview reference to
@@ -49,12 +52,16 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         VisttaNetwork.attachContext(activity)
         VisttaClipboard.attachWebView(webView)
         VisttaInstaller.attachActivity(activity)
+        VisttaShortcuts.attachActivity(activity)
+        VisttaShortcuts.attachWebView(webView)
+        VisttaShortcuts.flushPending()
         webView.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
         webView.addJavascriptInterface(visttaSocketBridge, "VisttaSocket")
         webView.addJavascriptInterface(visttaClipboardBridge, "VisttaClipboard")
         webView.addJavascriptInterface(visttaThemeBridge, "VisttaTheme")
         webView.addJavascriptInterface(VisttaInstaller, "VisttaInstaller")
+        webView.addJavascriptInterface(VisttaShortcuts, "VisttaShortcuts")
     }
 
     private fun ensureDefaultNotificationChannel() {

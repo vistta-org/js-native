@@ -276,8 +276,8 @@ background scheduler (see [Scheduler](#scheduler) below).
   - `VisttaClipboard` — standard foreground clipboard operations and manual
     sync. Android limits normal clipboard reads to the focused app.
   - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` /
-    `VisttaClipboard` / `VisttaInstaller` JavascriptInterface bridges injected
-    into the webview.
+    `VisttaClipboard` / `VisttaInstaller` / `VisttaShortcuts`
+    JavascriptInterface bridges injected into the webview.
   - A default notification channel for the notification plugin.
   - The `<uses-permission>`s (`POST_NOTIFICATIONS`, `VIBRATE`, `WAKE_LOCK`,
     `FOREGROUND_SERVICE*`, `REQUEST_INSTALL_PACKAGES`) and foreground
@@ -309,7 +309,11 @@ background scheduler (see [Scheduler](#scheduler) below).
   bar. Combined with `adjustResize` above, this makes the keyboard work like a
   native app. The root view background color is controlled by the
   `VisttaTheme` bridge (see `Theme` plugin below). On desktop, the `Theme`
-  plugin uses Tauri's `window.setTheme()` and `window.setBackgroundColor()`
+  plugin uses Tauri's `window.setTheme()` and `window.setBackgroundColor()`.
+  The patch also wires launch-shortcut intents: `onCreate` and `onNewIntent`
+  forward `org.vistta.runtime.LAUNCH_SHORTCUT` intents to `VisttaShortcuts`
+  so they reach the webview as `launch-action` events (see
+  [Accessibility](#accessibility)).
 - `patchBuildTask` — rewrites Tauri 2.11.2's `BuildTask.kt` to call the
   `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
   the consumer's `package.json` doesn't need a `tauri` script
@@ -333,7 +337,9 @@ background scheduler (see [Scheduler](#scheduler) below).
   package-dir cleanup needed.
 - Desktop `app.background: true` — keeps the app alive in the background (tray
   icon + hide-on-close). The `tray-icon` Cargo feature is conditionally added.
-  Has no effect on Android/iOS.
+  The tray menu is dynamic: JS publishes quick-actions via `Accessibility.setShortcuts`
+  (see [Accessibility](#accessibility)) and clicks emit `launch-action` events back to
+  the webview. Has no effect on Android/iOS.
 
 **What's gone:**
 
@@ -377,7 +383,18 @@ await Tauri.build({
 Import plugin namespaces from `@vistta/js-runtime/plugins`:
 
 ```javascript
-import { Clipboard, Dialog, Filesystem, Haptics, Notification, Scheduler, Shell, System } from "@vistta/js-runtime/plugins";
+import {
+  Clipboard,
+  Dialog,
+  Filesystem,
+  Haptics,
+  Notification,
+  Scheduler,
+  Shell,
+  Shortcuts,
+  Accessibility,
+  System,
+} from "@vistta/js-runtime/plugins";
 ```
 
 `System` re-exports the Tauri core API modules (`@tauri-apps/api/app` and `@tauri-apps/api/path`) under one flat namespace — e.g. `System.getVersion()` and `System.downloadDir()`.
@@ -431,6 +448,67 @@ const dest = await System.join(dir, "update.exe");
 ```
 
 `System.downloadDir()` works out of the box — path resolution is part of the Tauri core API and doesn't require a separate permission. The fs scope already grants `$DOWNLOAD/**` for actual file access.
+
+### Accessibility
+
+`Accessibility` exposes a cross-platform dynamic quick-action API. The app
+declares a list of `{ id, label, icon?, payload? }` entries and a single
+handler; the runtime pushes the entries to whichever native surface exists
+and routes triggers back into JS.
+
+- **Desktop** (when `app.background: true`) — entries become items in the
+  system-tray menu, below the built-in `Show` and `Quit`. The menu is
+  rebuilt at runtime whenever `setShortcuts` is called. Selecting an item
+  emits a `launch-action` event the handler receives.
+- **Android** — entries are published as dynamic launcher shortcuts via
+  `ShortcutManagerCompat` (shown when the user long-presses the app icon).
+  Selecting one (re)launches the activity with an intent whose extras carry
+  the `id` and `payload`; `MainActivity` forwards the intent to the
+  `VisttaShortcuts` bridge, which dispatches a `launch-action` event into
+  the webview. Cold-start actions are stashed and flushed once the webview
+  attaches.
+- **iOS / browser** — `setShortcuts` is a no-op and `onLaunchAction` never
+  fires.
+
+```javascript
+import { Accessibility } from "@vistta/js-runtime/plugins";
+
+// Publish the current action set. Safe to call again later to update it
+// (e.g. when a feature is enabled/disabled in settings).
+await Accessibility.setShortcuts([
+  { id: "sync.clipboard", label: "Sync clipboard" },
+  { id: "notes.new", label: "New note" },
+  { id: "search", label: "Search" },
+  { id: "files.open", label: "Open files", payload: "root" },
+]);
+
+// Receive triggers from either surface.
+Accessibility.onLaunchAction(({ id, payload }) => {
+  switch (id) {
+    case "sync.clipboard":
+      /* ... */ break;
+    case "notes.new":
+      /* ... */ break;
+    case "search":
+      /* ... */ break;
+    case "files.open":
+      /* payload === "root" */ break;
+  }
+});
+```
+
+`icon` is an Android drawable resource name (no extension, no
+`R.drawable.` prefix) bundled with the app; it is ignored on desktop
+(tray items are text-only). `payload` is an opaque string forwarded
+unchanged through the native layer — useful for parameterised actions
+(e.g. opening a specific note id). On a cold-start launch from a shortcut,
+`payload` is recovered from the intent extra, not the JS list, so it is
+available before `setShortcuts` has run.
+
+The connect app owns the single source of truth for the action set; native
+code only carries `{ id, label, icon, payload }` in and `{ id, payload }`
+out. Requires no additional permissions on Android — dynamic shortcuts are
+part of the launcher contract.
 
 ### Shell
 

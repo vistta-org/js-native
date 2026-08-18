@@ -66,6 +66,13 @@ export async function patchLibRs(targetDir, config) {
   // is gated on `cfg(not(any(target_os = "android", target_os = "ios")))` so
   // mobile targets never see it. Requires the `tray-icon` Cargo feature,
   // which patchCargoToml adds when `app.background` is set.
+  //
+  // The tray menu is dynamic: JS publishes quick-actions via the
+  // `set-shortcuts` Tauri event (see plugins/shortcuts.js), and a listener
+  // rebuilds the menu from the payload. Menu clicks for action ids emit a
+  // `launch-action` event back to the webview so the JS `onLaunchAction`
+  // handler receives `{ id, payload }`. The built-in `Show` and `Quit`
+  // items are always present.
   const background = !!config?.app?.background;
   const desktopChainWithBackground = background
     ? `${desktopChain ? desktopChain + "\n" : ""}        .on_window_event(|window, event| {
@@ -76,26 +83,91 @@ export async function patchLibRs(targetDir, config) {
         })
         .setup(|app| {
             use tauri::tray::TrayIconBuilder;
-            use tauri::menu::{Menu, MenuItem};
+            use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+            use tauri::{Emitter, Listener, Manager};
+            use std::sync::Mutex;
 
-            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            // id→payload table so the menu-event handler can recover the
+            // payload for a dynamic action id.
+            app.manage(Mutex::new::<Vec<(String, String)>>(Vec::new()));
+
             let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => { app.exit(0); }
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "quit" => { app.exit(0); }
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        id => {
+                            let payload = app
+                                .try_state::<Mutex<Vec<(String, String)>>>()
+                                .and_then(|s| s.lock().ok())
+                                .and_then(|table| {
+                                    table.iter().find(|(aid, _)| aid == id).map(|(_, p)| p.clone())
+                                })
+                                .unwrap_or_default();
+                            let _ = app.emit("launch-action", serde_json::json!({
+                                "id": id,
+                                "payload": payload,
+                            }));
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
                     }
-                    _ => {}
                 })
                 .build(app)?;
+
+            // Rebuild the tray menu when JS publishes a new shortcut list.
+            let handle = app.handle().clone();
+            app.listen("set-shortcuts", move |event| {
+                let Some(tray) = handle.tray_by_id("main") else { return };
+                let Some(payload) = event.payload() else { return };
+                let entries: Vec<ShortcutEntry> = match serde_json::from_str(payload) {
+                    Ok(v) => v, Err(_) => return,
+                };
+                if let Some(state) = handle.try_state::<Mutex<Vec<(String, String)>>>() {
+                    if let Ok(mut table) = state.lock() {
+                        table.clear();
+                        table.extend(entries.iter().map(|e| (e.id.clone(), e.payload.clone())));
+                    }
+                }
+                let show_i = match MenuItem::with_id(&handle, "show", "Show", true, None::<&str>) {
+                    Ok(i) => i, Err(_) => return,
+                };
+                let quit_i = match MenuItem::with_id(&handle, "quit", "Quit", true, None::<&str>) {
+                    Ok(i) => i, Err(_) => return,
+                };
+                let menu = match Menu::new(&handle) {
+                    Ok(m) => m, Err(_) => return,
+                };
+                let _ = menu.append(&show_i);
+                if !entries.is_empty() {
+                    if let Ok(sep) = PredefinedMenuItem::separator(&handle) {
+                        let _ = menu.append(&sep);
+                    }
+                    for e in &entries {
+                        if let Ok(i) = MenuItem::with_id(&handle, &e.id, &e.label, true, None::<&str>) {
+                            let _ = menu.append(&i);
+                        }
+                    }
+                    if let Ok(sep) = PredefinedMenuItem::separator(&handle) {
+                        let _ = menu.append(&sep);
+                    }
+                }
+                let _ = menu.append(&quit_i);
+                let _ = tray.set_menu(Some(menu));
+            });
 
             Ok(())
         })`
@@ -133,7 +205,11 @@ ${desktopBlock}${mobileBlock}
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-`;
+${
+  background
+    ? `\n#[cfg(not(any(target_os = "android", target_os = "ios")))]\n#[derive(serde::Deserialize)]\nstruct ShortcutEntry {\n    id: String,\n    label: String,\n    #[serde(default)]\n    icon: Option<String>,\n    #[serde(default)]\n    payload: String,\n}\n`
+    : ""
+}`;
   await writeIfChanged(libPath, content);
 }
 

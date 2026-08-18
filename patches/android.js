@@ -75,7 +75,7 @@ export async function patchAndroidManifest(targetDir) {
   const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
   if (!fs.existsSync(manifestPath)) return;
   let content = String(await fs.readFile(manifestPath, "utf8"));
-  const activity = /<activity\b(?=[^>]*android:name="(?:\.MainActivity|[^\"]*\.MainActivity)")[^>]*>/;
+  const activity = /<activity\b(?=[^>]*android:name="(?:\.MainActivity|[^"]*\.MainActivity)")[^>]*>/;
   const match = content.match(activity)?.[0];
   if (!match) return;
   // adjustResize makes Android report IME insets to the activity; the
@@ -107,6 +107,11 @@ const IME_MARKER = "// vistta:ime-insets";
  *
  * The root view's background color is controlled by the `VisttaStatusBar`
  * bridge in `VisttaPlugin.kt` (called from JS via `setStatusBarColor`).
+ *
+ * This patch also wires launch-shortcut intents: `onCreate` and
+ * `onNewIntent` forward any `org.vistta.runtime.LAUNCH_SHORTCUT` intent to
+ * `VisttaShortcuts.dispatchIntent`, which dispatches a `launch-action`
+ * event into the webview (or stashes it for cold start).
  */
 export async function patchMainActivity(targetDir, config) {
   const appId = resolveAppId(config);
@@ -126,10 +131,12 @@ export async function patchMainActivity(targetDir, config) {
   const content = [
     `package ${appId}`,
     ``,
+    `import android.content.Intent`,
     `import android.os.Bundle`,
     `import androidx.activity.enableEdgeToEdge`,
     `import androidx.core.view.ViewCompat`,
     `import androidx.core.view.WindowInsetsCompat`,
+    `import org.vistta.runtime.VisttaShortcuts`,
     ``,
     `class MainActivity : TauriActivity() {`,
     `  ${IME_MARKER}`,
@@ -143,6 +150,17 @@ export async function patchMainActivity(targetDir, config) {
     `      v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime))`,
     `      insets`,
     `    }`,
+    `    // Forward launch-shortcut intents that opened this activity so the`,
+    `    // VisttaShortcuts bridge can dispatch them into the webview once it`,
+    `    // attaches. On a cold start the webview is not ready yet;`,
+    `    // VisttaShortcuts stashes the action and flushes it from VisttaPlugin.load.`,
+    `    VisttaShortcuts.dispatchIntent(intent)`,
+    `  }`,
+    ``,
+    `  override fun onNewIntent(intent: Intent) {`,
+    `    super.onNewIntent(intent)`,
+    `    setIntent(intent)`,
+    `    VisttaShortcuts.dispatchIntent(intent)`,
     `  }`,
     `}`,
     ``,
@@ -280,7 +298,7 @@ export async function patchAppGradleSigning(targetDir, config) {
   if (signingRe.test(content)) {
     content = content.replace(signingRe, signingBlock);
   } else {
-    content = content.replace(/(\n    buildTypes \{)/, `\n${signingBlock}\n$1`);
+    content = content.replace(/(\n {4}buildTypes \{)/, `\n${signingBlock}\n$1`);
   }
 
   // Wire the release build type to use the signing config.
