@@ -51,3 +51,11 @@ export function stopMonitor() {
     // The plugin may have been removed while a watcher was active.
   }
 }
+
+export function writeText(text) {
+  try {
+    return getClipboardBridge()?.writeText(text) === true;
+  } catch {
+    return false;
+  }
+}

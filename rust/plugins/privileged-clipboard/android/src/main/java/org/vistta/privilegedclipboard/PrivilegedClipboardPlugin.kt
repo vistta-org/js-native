@@ -35,5 +35,6 @@ class PrivilegedClipboardPlugin(private val activity: Activity) : Plugin(activit
         @JavascriptInterface fun requestShizukuPermission() = ShizukuClipboard.requestPermission()
         @JavascriptInterface fun startMonitor(intervalMs: Double) = ShizukuClipboard.startMonitor(intervalMs.toLong())
         @JavascriptInterface fun stopMonitor() = ShizukuClipboard.stopMonitor()
+        @JavascriptInterface fun writeText(text: String) = ShizukuClipboard.writeText(text)
     }
 }

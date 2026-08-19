@@ -20,7 +20,7 @@ object ShizukuClipboard {
 
     private fun args(): Shizuku.UserServiceArgs? = context?.let { appContext ->
         Shizuku.UserServiceArgs(ComponentName(appContext, ShizukuClipboardService::class.java))
-            .processNameSuffix("vistta_clipboard").tag("vistta-privileged-clipboard").version(2).daemon(false)
+            .processNameSuffix("vistta_clipboard").tag("vistta-privileged-clipboard").version(3).daemon(false)
     }
     private val callback = object : ClipboardMonitorCallback.Stub() { override fun onClipboardChanged(text: String) = PrivilegedClipboardBridge.onClipboardChanged(text) }
     private val connection = object : ServiceConnection {
@@ -51,6 +51,11 @@ object ShizukuClipboard {
         if (monitor != null) { startRemoteMonitor(); return true }
         return try { Shizuku.bindUserService(args() ?: return false, connection); true } catch (error: Throwable) { Log.e(TAG, "Unable to bind Shizuku clipboard service", error); monitoring = false; false }
     }
+    fun writeText(text: String): Boolean {
+        val m = monitor ?: return false
+        return try { m.writeText(text) } catch (_: RemoteException) { false }
+    }
+
     fun stopMonitor() {
         monitoring = false
         try { monitor?.stop() } catch (_: RemoteException) { }

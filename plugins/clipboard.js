@@ -24,16 +24,29 @@ import {
   requestShizukuPermission,
   startMonitor,
   stopMonitor,
+  writeText as privilegedWriteText,
 } from "./privileged-clipboard.js";
 import { clearBackgroundInterval, setBackgroundInterval } from "./scheduler.js";
 
 // Re-export the Tauri clipboard-manager commands as named exports so they
 // flatten into the `Clipboard` namespace via `export * as Clipboard` in
-import { clear, readImage, readText, writeHtml, writeImage, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { clear, readImage, readText, writeHtml, writeImage, writeText as tauriWriteText } from "@tauri-apps/plugin-clipboard-manager";
 
 // Re-export so `export * as Clipboard` in `index.js` flattens the Tauri
 // commands into the `Clipboard` namespace alongside the background methods.
-export { clear, readImage, readText, writeHtml, writeImage, writeText };
+export { clear, readImage, readText, writeHtml, writeImage };
+
+/**
+ * Writes text to the clipboard. On Android with authorized Shizuku, writes
+ * through the shell identity so it succeeds even when the app is
+ * backgrounded. Otherwise falls back to the standard Tauri clipboard-manager
+ * write (foreground-only on Android 10+).
+ */
+export async function writeText(text) {
+  const b = getClipboardBridge();
+  if (b && isShizukuAuthorized() && privilegedWriteText(text)) return;
+  await tauriWriteText(text);
+}
 
 let watcher = null;
 let lastHash = null;

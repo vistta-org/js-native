@@ -11,6 +11,8 @@ interface ClipboardMonitor : IInterface {
     fun start(callback: ClipboardMonitorCallback, intervalMs: Long)
     @Throws(RemoteException::class)
     fun stop()
+    @Throws(RemoteException::class)
+    fun writeText(text: String): Boolean
 
     abstract class Stub : Binder(), ClipboardMonitor {
         init { attachInterface(this, DESCRIPTOR) }
@@ -23,18 +25,25 @@ interface ClipboardMonitor : IInterface {
                 reply?.writeNoException(); true
             }
             TRANSACTION_STOP -> { data.enforceInterface(DESCRIPTOR); stop(); reply?.writeNoException(); true }
+            TRANSACTION_WRITE -> { data.enforceInterface(DESCRIPTOR); val result = writeText(data.readString().orEmpty()); reply?.writeNoException(); reply?.writeInt(if (result) 1 else 0); true }
             else -> super.onTransact(code, data, reply, flags)
         }
         companion object {
             private const val DESCRIPTOR = "org.vistta.privilegedclipboard.ClipboardMonitor"
             private const val TRANSACTION_START = IBinder.FIRST_CALL_TRANSACTION
             private const val TRANSACTION_STOP = IBinder.FIRST_CALL_TRANSACTION + 1
+            private const val TRANSACTION_WRITE = IBinder.FIRST_CALL_TRANSACTION + 2
             fun asInterface(binder: IBinder?): ClipboardMonitor? = binder?.let { Proxy(it) }
         }
         private class Proxy(private val remote: IBinder) : ClipboardMonitor {
             override fun asBinder() = remote
             override fun start(callback: ClipboardMonitorCallback, intervalMs: Long) = transact(TRANSACTION_START) { it.writeStrongBinder(callback.asBinder()); it.writeLong(intervalMs) }
             override fun stop() = transact(TRANSACTION_STOP) { }
+            override fun writeText(text: String): Boolean {
+                val data = Parcel.obtain(); val reply = Parcel.obtain()
+                return try { data.writeInterfaceToken(DESCRIPTOR); data.writeString(text); remote.transact(TRANSACTION_WRITE, data, reply, 0); reply.readException(); reply.readInt() == 1 }
+                finally { data.recycle(); reply.recycle() }
+            }
             private fun transact(code: Int, write: (Parcel) -> Unit) {
                 val data = Parcel.obtain(); val reply = Parcel.obtain()
                 try { data.writeInterfaceToken(DESCRIPTOR); write(data); remote.transact(code, data, reply, 0); reply.readException() }

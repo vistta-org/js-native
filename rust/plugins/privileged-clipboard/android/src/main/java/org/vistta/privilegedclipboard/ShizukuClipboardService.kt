@@ -14,6 +14,7 @@ class ShizukuClipboardService(private val context: Context) : ClipboardMonitor.S
         const val TAG = "VisttaPrivClipboard"
         const val CLIPBOARD_DESCRIPTOR = "android.content.IClipboard"
         const val GET_PRIMARY_CLIP_TRANSACTION = IBinder.FIRST_CALL_TRANSACTION + 3
+        const val SET_PRIMARY_CLIP_TRANSACTION = IBinder.FIRST_CALL_TRANSACTION + 1
         const val SHELL_PACKAGE = "com.android.shell"
     }
     private val handler = Handler(Looper.getMainLooper())
@@ -38,6 +39,27 @@ class ShizukuClipboardService(private val context: Context) : ClipboardMonitor.S
     }
 
     override fun stop() { poll?.let(handler::removeCallbacks); poll = null; callback = null; lastText = null }
+
+    override fun writeText(text: String): Boolean = writeClipboard(text)
+
+    fun writeClipboard(text: String): Boolean {
+        return try {
+            val clipboard = Class.forName("android.os.ServiceManager").getMethod("getService", String::class.java).invoke(null, "clipboard") as? IBinder ?: return false
+            val clip = android.content.ClipData.newPlainText(SHELL_PACKAGE, text)
+            val request = Parcel.obtain(); val reply = Parcel.obtain()
+            try {
+                request.writeInterfaceToken(CLIPBOARD_DESCRIPTOR)
+                request.writeTypedObject(clip, 0)
+                request.writeString(SHELL_PACKAGE)
+                request.writeString(null)
+                request.writeInt(0)
+                request.writeInt(0)
+                clipboard.transact(SET_PRIMARY_CLIP_TRANSACTION, request, reply, 0)
+                reply.readException()
+                true
+            } finally { request.recycle(); reply.recycle() }
+        } catch (error: Throwable) { Log.w(TAG, "Unable to write clipboard from Shizuku user service", error); false }
+    }
 
     private fun readClipboard(): String? {
         return try {
