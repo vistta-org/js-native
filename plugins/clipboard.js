@@ -21,16 +21,23 @@
 import {
   getClipboardBridge,
   isShizukuAuthorized,
+  writeText as privilegedWriteText,
   requestShizukuPermission,
   startMonitor,
   stopMonitor,
-  writeText as privilegedWriteText,
 } from "./privileged-clipboard.js";
 import { clearBackgroundInterval, setBackgroundInterval } from "./scheduler.js";
 
 // Re-export the Tauri clipboard-manager commands as named exports so they
 // flatten into the `Clipboard` namespace via `export * as Clipboard` in
-import { clear, readImage, readText, writeHtml, writeImage, writeText as tauriWriteText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  clear,
+  readImage,
+  readText,
+  writeText as tauriWriteText,
+  writeHtml,
+  writeImage,
+} from "@tauri-apps/plugin-clipboard-manager";
 
 // Re-export so `export * as Clipboard` in `index.js` flattens the Tauri
 // commands into the `Clipboard` namespace alongside the background methods.

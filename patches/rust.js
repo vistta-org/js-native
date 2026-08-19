@@ -89,7 +89,7 @@ export async function patchLibRs(targetDir, config) {
 
             // id→payload table so the menu-event handler can recover the
             // payload for a dynamic action id.
-            app.manage(Mutex::new::<Vec<(String, String)>>(Vec::new()));
+            app.manage(Mutex::new(Vec::<(String, String)>::new()));
 
             let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -110,8 +110,8 @@ export async function patchLibRs(targetDir, config) {
                         id => {
                             let payload = app
                                 .try_state::<Mutex<Vec<(String, String)>>>()
-                                .and_then(|s| s.lock().ok())
-                                .and_then(|table| {
+                                .and_then(|state| {
+                                    let table = state.lock().ok()?;
                                     table.iter().find(|(aid, _)| aid == id).map(|(_, p)| p.clone())
                                 })
                                 .unwrap_or_default();
@@ -132,7 +132,7 @@ export async function patchLibRs(targetDir, config) {
             let handle = app.handle().clone();
             app.listen("set-shortcuts", move |event| {
                 let Some(tray) = handle.tray_by_id("main") else { return };
-                let Some(payload) = event.payload() else { return };
+                let payload = event.payload();
                 let entries: Vec<ShortcutEntry> = match serde_json::from_str(payload) {
                     Ok(v) => v, Err(_) => return,
                 };
