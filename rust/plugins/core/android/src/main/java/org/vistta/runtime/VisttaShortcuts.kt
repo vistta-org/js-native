@@ -3,6 +3,8 @@ package org.vistta.runtime
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -64,8 +66,8 @@ object VisttaShortcuts {
      *
      * @param json A JSON array: `[ { "id", "label", "icon", "payload" }, ... ]`.
      * `icon` is a drawable resource name (no extension); missing or
-     * unresolvable icons are silently ignored (the shortcut still publishes
-     * with the default launcher icon).
+     * unresolvable icons result in a transparent icon so the launcher shows
+     * no icon instead of the default app icon.
      */
     @android.webkit.JavascriptInterface
     fun setShortcuts(json: String) {
@@ -85,6 +87,10 @@ object VisttaShortcuts {
                 )
             if (entry.iconRes != null) {
                 builder.setIcon(IconCompat.createWithResource(activity, entry.iconRes))
+            } else {
+                // No icon specified — use a transparent icon so the launcher
+                // shows nothing instead of falling back to the app icon.
+                builder.setIcon(IconCompat.createWithBitmap(transparentBitmap()))
             }
             try {
                 builder.build()
@@ -179,6 +185,12 @@ object VisttaShortcuts {
     }
 
     private class ParsedEntry(val id: String, val label: String, val iconRes: Int?, val payload: String?)
+
+    private fun transparentBitmap(): Bitmap {
+        return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.TRANSPARENT)
+        }
+    }
 
     private fun resolveDrawable(context: Context, name: String): Int? {
         return try {

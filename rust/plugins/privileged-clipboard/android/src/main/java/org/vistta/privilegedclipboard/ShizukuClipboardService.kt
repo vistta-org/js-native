@@ -9,7 +9,7 @@ import android.os.Parcel
 import android.os.RemoteException
 import android.util.Log
 
-class ShizukuClipboardService(private val context: Context) : ClipboardMonitor.Stub() {
+class ShizukuClipboardService : ClipboardMonitor.Stub() {
     private companion object {
         const val TAG = "VisttaPrivClipboard"
         const val CLIPBOARD_DESCRIPTOR = "android.content.IClipboard"
@@ -18,6 +18,7 @@ class ShizukuClipboardService(private val context: Context) : ClipboardMonitor.S
         const val SHELL_PACKAGE = "com.android.shell"
     }
     private val handler = Handler(Looper.getMainLooper())
+    private val context: Context? get() = ShizukuClipboard.appContext
     private var callback: ClipboardMonitorCallback? = null
     private var poll: Runnable? = null
     private var lastText: String? = null

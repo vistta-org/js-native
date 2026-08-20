@@ -42,7 +42,9 @@ import { listen } from "@tauri-apps/api/event";
  * @property {string} [icon] - Optional icon identifier. On Android this is the
  *   name of a drawable resource (without the `R.drawable.` prefix and without
  *   a file extension) bundled with the app; on desktop it is currently
- *   ignored (tray items are text-only).
+ *   ignored (tray items are text-only). If omitted (or unresolvable) on
+ *   Android, the shortcut publishes with a transparent icon so the launcher
+ *   shows no icon instead of the default app icon.
  * @property {string} [payload] - Optional opaque payload string forwarded
  *   unchanged in the `launch-action` event. Useful for parameterised actions
  *   (e.g. opening a specific note id).

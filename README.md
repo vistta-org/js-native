@@ -499,7 +499,9 @@ Accessibility.onLaunchAction(({ id, payload }) => {
 
 `icon` is an Android drawable resource name (no extension, no
 `R.drawable.` prefix) bundled with the app; it is ignored on desktop
-(tray items are text-only). `payload` is an opaque string forwarded
+(tray items are text-only). If omitted (or unresolvable), the shortcut
+publishes with a transparent icon so the launcher shows no icon instead
+of the default app icon. `payload` is an opaque string forwarded
 unchanged through the native layer — useful for parameterised actions
 (e.g. opening a specific note id). On a cold-start launch from a shortcut,
 `payload` is recovered from the intent extra, not the JS list, so it is

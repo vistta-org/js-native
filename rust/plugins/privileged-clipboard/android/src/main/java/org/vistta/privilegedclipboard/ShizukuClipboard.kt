@@ -13,6 +13,7 @@ object ShizukuClipboard {
     private const val TAG = "VisttaPrivClipboard"
     private const val PERMISSION_REQUEST_CODE = 1042
     private var context: Context? = null
+    internal val appContext: Context? get() = context
     private var monitor: ClipboardMonitor? = null
     private var monitoring = false
     private var intervalMs = 2000L
@@ -49,7 +50,7 @@ object ShizukuClipboard {
         if (!isAvailable()) { Log.i(TAG, "Shizuku is unavailable; using standard clipboard fallback"); return false }
         if (!isAuthorized()) { Log.i(TAG, "Requesting Shizuku permission"); requestPermission(); return false }
         if (monitor != null) { startRemoteMonitor(); return true }
-        return try { Shizuku.bindUserService(args() ?: return false, connection); true } catch (error: Throwable) { Log.e(TAG, "Unable to bind Shizuku clipboard service", error); monitoring = false; false }
+        return try { Shizuku.bindUserService(args() ?: return false, connection); false } catch (error: Throwable) { Log.e(TAG, "Unable to bind Shizuku clipboard service", error); monitoring = false; false }
     }
     fun writeText(text: String): Boolean {
         val m = monitor ?: return false

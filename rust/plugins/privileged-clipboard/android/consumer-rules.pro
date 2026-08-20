@@ -1,6 +1,6 @@
 # Shizuku instantiates the user service via reflection (Class.newInstance),
 # so the class and its no-arg constructor must survive minification.
--keep class org.vistta.privilegedclipboard.ShizukuClipboardService { <init>(); }
+-keep class org.vistta.privilegedclipboard.ShizukuClipboardService { <init>(); <fields>; }
 
 # The Binder Stub classes and their inner Proxy classes are accessed via
 # reflection (asInterface / transact). Keep them and their methods.
