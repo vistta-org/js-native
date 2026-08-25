@@ -249,6 +249,10 @@ object VisttaNetwork {
                 }
                 socket.connect()
             } catch (e: Throwable) {
+                if (sockets.remove(id) != null) {
+                    releaseWakeLock()
+                    try { appContext?.get()?.let { VisttaService.socketClosed(it) } } catch (_: Throwable) {}
+                }
                 dispatchSocketEvent(id, "connect_error", arrayOf(e.message ?: e.javaClass.simpleName))
             }
         }
@@ -308,12 +312,32 @@ object VisttaNetwork {
     }
 
     // Ref-counted wake lock helpers.
+    // Re-armed every 30 minutes so the PARTIAL_WAKE_LOCK never expires
+    // while a socket is open (acquire(1h) + re-arm before expiry).
+    private const val WAKE_LOCK_REARM_MS = 30 * 60 * 1000L
+
+    private val wakeLockRearmRunnable = object : Runnable {
+        override fun run() {
+            synchronized(wakeLockLock) {
+                val lock = wakeLock
+                if (lock != null && lock.isHeld && wakeLockRefCount > 0) {
+                    lock.acquire(60 * 60 * 1000L) // re-arm for another hour
+                    mainHandler.postDelayed(this, WAKE_LOCK_REARM_MS)
+                }
+            }
+        }
+    }
+
     private fun acquireWakeLock() {
         val ctx = appContext?.get() ?: return
         synchronized(wakeLockLock) {
             wakeLockRefCount++
             val current = wakeLock
-            if (current != null && current.isHeld) return
+            if (current != null && current.isHeld) {
+                mainHandler.removeCallbacks(wakeLockRearmRunnable)
+                mainHandler.postDelayed(wakeLockRearmRunnable, WAKE_LOCK_REARM_MS)
+                return
+            }
             val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: run {
                 wakeLockRefCount--
                 return
@@ -325,8 +349,9 @@ object VisttaNetwork {
                 setReferenceCounted(false)
             }
             try {
-                lock.acquire(60 * 60 * 1000L) // 1 hour ceiling; we re-arm on each acquire
+                lock.acquire(60 * 60 * 1000L) // 1 hour ceiling
                 wakeLock = lock
+                mainHandler.postDelayed(wakeLockRearmRunnable, WAKE_LOCK_REARM_MS)
             } catch (_: Throwable) {
                 wakeLockRefCount--
             }
@@ -337,6 +362,7 @@ object VisttaNetwork {
         synchronized(wakeLockLock) {
             if (force) wakeLockRefCount = 0 else if (wakeLockRefCount > 0) wakeLockRefCount--
             if (wakeLockRefCount > 0) return
+            mainHandler.removeCallbacks(wakeLockRearmRunnable)
             val lock = wakeLock ?: return
             try { if (lock.isHeld) lock.release() } catch (_: Throwable) {}
             wakeLock = null

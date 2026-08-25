@@ -132,14 +132,14 @@ class VisttaService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // System restarted the service with a null intent (START_STICKY).
-        // The specialUse time budget may have been exhausted or the OS
-        // revoked foreground eligibility, so promoting to foreground again
-        // would throw ForegroundServiceStartNotAllowedException.
-        // Stop immediately instead of entering a crash loop.
+        // System restarted the service with a null intent after the
+        // process was killed by the LMK. On Android 14+ we cannot call
+        // startForeground() from a background restart — it throws
+        // ForegroundServiceStartNotAllowedException. Keep the service
+        // alive (START_STICKY) but non-foreground; the socket's
+        // reconnection will re-promote it via socketOpened().
         if (intent == null) {
-            stopSelf(startId)
-            return START_NOT_STICKY
+            return START_STICKY
         }
         // Only promote to foreground for actions started via
         // startForegroundService() (REGISTER, SOCKET_OPENED). The other
