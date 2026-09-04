@@ -71,7 +71,18 @@ export async function patchBuildTask(targetDir, config) {
   await writeIfChanged(buildTaskPath, content);
 }
 
-export async function patchAndroidManifest(targetDir) {
+const ASSIST_MARKER = "<!-- vistta:assistant -->";
+
+/**
+ * Patches Tauri's generated `AndroidManifest.xml`:
+ * - soft-keyboard resize mode (IME insets),
+ * - when `config.app.assistant` is set, an ASSIST intent-filter on the main
+ *   activity so the app can be picked as the system Digital Assistant app
+ *   (long-press power / assistant gesture). Idempotent via a marker comment.
+ * @param {string} targetDir
+ * @param {any} [config]
+ */
+export async function patchAndroidManifest(targetDir, config) {
   const manifestPath = fs.resolve(targetDir, "gen", "android", "app", "src", "main", "AndroidManifest.xml");
   if (!fs.existsSync(manifestPath)) return;
   let content = String(await fs.readFile(manifestPath, "utf8"));
@@ -85,7 +96,27 @@ export async function patchAndroidManifest(targetDir) {
     ? match.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustResize"')
     : match.replace(/>$/, '\n            android:windowSoftInputMode="adjustResize">');
   content = content.replace(activity, patched);
+  const assistantEnabled = !!config?.app?.assistant;
+  if (assistantEnabled && !hasAssistantIntentFilter(content)) {
+    // Insert the ASSIST filter directly after the opening <activity ...> tag.
+    // The activity element already closes itself — no </activity> tail here
+    // (appending one duplicates the existing closer and breaks the merger).
+    const filter =
+      `${ASSIST_MARKER}\n            ` +
+      "<intent-filter>\n" +
+      '                <action android:name="android.intent.action.ASSIST" />\n' +
+      '                <category android:name="android.intent.category.DEFAULT" />\n' +
+      "            </intent-filter>";
+    content = content.replace(patched, `${patched}\n            ${filter}`);
+  } else if (!assistantEnabled && hasAssistantIntentFilter(content) && content.includes(ASSIST_MARKER)) {
+    // Flag removed — strip the marker comment and the filter block after it.
+    content = content.replace(new RegExp(`\\s*${ASSIST_MARKER}[\\s\\S]*?</intent-filter>`), "");
+  }
   await writeIfChanged(manifestPath, content);
+}
+
+function hasAssistantIntentFilter(content) {
+  return /<action\s+android:name="android\.intent\.action\.ASSIST"/.test(content);
 }
 
 const IME_MARKER = "// vistta:ime-insets";

@@ -27,11 +27,12 @@
     "@tauri-apps/plugin-notification": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "@vistta/fs": "latest",
-    "@vistta/utils": "latest"
+    "@vistta/utils": "latest",
+    "tauri-plugin-audio-recorder-api": "^0.1.2"
   },
   "peerDependencies": {
-    "socket.io-client": "^4.8.3",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "socket.io-client": "^4.8.3"
   },
   "engines": {
     "node": ">=22.0.0"

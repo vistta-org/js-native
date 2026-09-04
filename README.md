@@ -276,12 +276,12 @@ background scheduler (see [Scheduler](#scheduler) below).
   - `VisttaClipboard` — standard foreground clipboard operations and manual
     sync. Android limits normal clipboard reads to the focused app.
   - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` /
-    `VisttaClipboard` / `VisttaInstaller` / `VisttaShortcuts`
+    `VisttaClipboard` / `VisttaInstaller` / `VisttaShortcuts` / `VisttaVad`
     JavascriptInterface bridges injected into the webview.
   - A default notification channel for the notification plugin.
   - The `<uses-permission>`s (`POST_NOTIFICATIONS`, `VIBRATE`, `WAKE_LOCK`,
-    `FOREGROUND_SERVICE*`, `REQUEST_INSTALL_PACKAGES`) and foreground
-    `VisttaService` entry in the plugin's own `AndroidManifest.xml` — merged
+    `FOREGROUND_SERVICE*`, `REQUEST_INSTALL_PACKAGES`, `RECORD_AUDIO`) and
+    foreground `VisttaService` entry in the plugin's own `AndroidManifest.xml` — merged
     into the host app by Android's manifest merger, no host-file patching
     needed. `VisttaInstaller` (the APK installer bridge) uses the app's
     `FileProvider` (authorities `${applicationId}.fileprovider`, declared in
@@ -335,6 +335,12 @@ background scheduler (see [Scheduler](#scheduler) below).
   side-by-side. The `namespace` stays stable (no suffix) so the generated
   Kotlin source tree doesn't drift between dev/release — no stale
   package-dir cleanup needed.
+- Android `app.assistant: true` — registers an ASSIST intent-filter so the
+  app can be picked as the system Digital Assistant app (long-press power /
+  assistant gesture). The trigger opens the app with a `launch-action`
+  `{ id: "assistant", payload }`; the payload is published by JS via
+  `Accessibility.setAssistant` (see [Accessibility](#accessibility)) and
+  persisted natively for cold starts. Has no effect on desktop/iOS.
 - Desktop `app.background: true` — keeps the app alive in the background (tray
   icon + hide-on-close). The `tray-icon` Cargo feature is conditionally added.
   The tray menu is dynamic: JS publishes quick-actions via `Accessibility.setShortcuts`
@@ -389,6 +395,7 @@ import {
   Filesystem,
   Haptics,
   Notification,
+  Recorder,
   Scheduler,
   Shell,
   Shortcuts,
@@ -449,6 +456,138 @@ const dest = await System.join(dir, "update.exe");
 
 `System.downloadDir()` works out of the box — path resolution is part of the Tauri core API and doesn't require a separate permission. The fs scope already grants `$DOWNLOAD/**` for actual file access.
 
+### Recorder
+
+`Recorder` is the namespace for media capture. All capture types follow the
+same contract: a start function resolves with a recording handle —
+`{ on, stop }` — where `on(event, callback)` subscribes to recording events
+and `stop()` resolves with `{ blob, stoppedBy }`.
+
+Events:
+
+- `"started"` — capture has actually begun (after permission/grant).
+- `"vad"` — live voice-activity sample `{ rms, speech }` (audio only,
+  fires ~every 100–200 ms). The tap starts with the recording when
+  `autoStop` is enabled, or on the first `"vad"` subscription otherwise —
+  samples only, enough to implement your own auto-stop.
+- `"stopped"` — the recording ended; the payload is the same object `stop()`
+  resolves with, delivered once before the promise settles. Once the
+  recording reaches its terminal state (stopped or failed) every event
+  listener on the handle is released.
+
+- **Audio** (`startAudioRecording`) — Tauri: captured via
+  `tauri-plugin-audio-recorder` (native capture over standard Tauri IPC; the
+  Android runtime permission is requested through the plugin before recording
+  starts). Mobile captures M4A/AAC and desktop WAV. Browser: the standard
+  `MediaRecorder` pipeline (`getUserMedia`). Accepts an options object:
+  `autoStop` (silence-aware auto-stop, below — `true` or an options object),
+  `deviceId` (input device — desktop native), `quality`
+  (`"low"|"medium"|"high"` — native capture), and the browser
+  capture-processing toggles `echoCancellation`/`noiseSuppression`/`autoGainControl`.
+- **Screen** (`startScreenRecording`) — Desktop/browser:
+  `getDisplayMedia` + `MediaRecorder` (the user picks a screen, window, or
+  tab). Android: `MediaProjection` via the system consent dialog — handled
+  natively by `VisttaScreenRecorder` (Tauri commands
+  `vistta|start_screen_recording` / `vistta|stop_screen_recording`), producing
+  an MP4 in the app cache dir. Requires the `FOREGROUND_SERVICE_MEDIA_PROJECTION`
+  permission (declared in the core plugin's manifest, merged at build time).
+- **Camera** (`startCameraRecording`) — `getUserMedia({ video })` +
+  `MediaRecorder` (front camera via `facingMode: "user"`); the platform
+  permission dialog is surfaced by the WebView/browser.
+
+```javascript
+import { Recorder } from "@vistta/js-runtime/plugins";
+
+// Call from a user gesture (mic button, etc.).
+const recording = await Recorder.startAudioRecording();
+recording.on("started", () => {
+  /* capture has begun — update UI */
+});
+
+// ...
+const { blob } = await recording.stop(); // Blob (M4A on mobile, WAV on desktop/browser)
+if (blob) {
+  // e.g. upload as FormData / convert to a data URL for a STT endpoint
+}
+
+// With options + events — capture config and live voice-activity feedback:
+const recording2 = await Recorder.startAudioRecording({
+  autoStop: true, // silence-aware auto-stop with defaults (enables "vad" too)
+  deviceId: "...", // input device (desktop native)
+  quality: "medium", // native capture quality (Tauri)
+  echoCancellation: true, // browser capture processing (Tauri ignores)
+  noiseSuppression: true,
+  autoGainControl: true,
+});
+recording2.on("vad", ({ rms, speech }) => {
+  /* live VAD feedback, fires ~every 100–200 ms while auto-stop runs */
+});
+recording2.on("stopped", ({ blob, stoppedBy }) => {
+  /* fires once before stop() settles — useful for cleanup */
+});
+
+// Screen + camera follow the identical contract:
+const screen = await Recorder.startScreenRecording();
+const { blob: screenBlob } = await screen.stop(); // webm or mp4
+const cam = await Recorder.startCameraRecording();
+const { blob: cam } = await cam.stop(); // webm
+```
+
+Start functions reject on permission denial or capture failure with a
+platform-appropriate message. A user gesture is required on most platforms —
+invoke them from a UI event handler.
+
+#### Silence-aware auto-stop (audio)
+
+Audio recording can opt in to silence-aware auto-stop: once speech was
+heard, the recording stops itself after the user has been quiet for
+`trailingSilenceMs` — push-to-talk becomes voice-first. The stop function
+resolves `{ blob, stoppedBy }` where `stoppedBy` is `"user"` (manual stop),
+`"silence"` (trailing-silence window elapsed), `"no-speech"` (nothing said
+within `initialSpeechTimeoutMs`), or `"max-duration"` (hard backstop).
+
+```javascript
+const recording = await Recorder.startAudioRecording({
+  autoStop: {
+    trailingSilenceMs: 2000, // silence after speech that stops the recording
+    minDurationMs: 3000, // never auto-stop before this
+    initialSpeechTimeoutMs: 10000, // cancel if no speech yet (0 = disabled)
+    maxDurationMs: 45000, // hard backstop regardless of VAD state
+  },
+});
+// `autoStop: true` is shorthand for exactly these defaults.
+
+const { blob, stoppedBy } = await recording.stop(); // "user" | "silence" | "max-duration" | "no-speech"
+```
+
+Without `autoStop` the recording never stops itself — but `"vad"` events are
+still available: the tap starts on the first `"vad"` subscription and
+delivers `{ rms, speech }` samples, so you can implement your own auto-stop
+(or a live level meter):
+
+```javascript
+const recording = await Recorder.startAudioRecording();
+let lastSpeech = 0;
+recording.on("vad", ({ rms, speech }) => {
+  if (speech) lastSpeech = Date.now();
+  else if (lastSpeech && Date.now() - lastSpeech > 2000) recording.stop(); // custom auto-stop
+});
+```
+
+Timing order is `minDurationMs` floor → `trailingSilenceMs` window →
+`maxDurationMs` backstop. The voice-activity detection uses an adaptive
+noise floor with hysteresis (speech must rise above the floor by a margin)
+and arms only after the first speech burst, so a pre-speech pause is never
+cut short. Manual stop always wins if it happens first.
+
+Live loudness is sourced per platform: browser/desktop fork the recorded
+stream into a Web Audio `AnalyserNode` (a parallel tap — the recording is
+untouched); Android uses the runtime's `VisttaVad` bridge (a parallel
+`AudioRecord` tap, since the WebView media stack is bypassed there). On
+desktop Tauri the tap runs via a parallel `getUserMedia` stream; if that is
+denied, auto-stop degrades to manual-only. Recording itself is unchanged by
+the VAD — it only triggers the existing stop path.
+
 ### Accessibility
 
 `Accessibility` exposes a cross-platform dynamic quick-action API. The app
@@ -495,6 +634,12 @@ Accessibility.onLaunchAction(({ id, payload }) => {
       /* payload === "root" */ break;
   }
 });
+
+// System assistant trigger (Android, when built with `app.assistant: true`).
+// Publishes the payload the trigger delivers; the event arrives with the
+// fixed id "assistant" and this payload. Any JSON-serializable value works —
+// serialization is handled by the runtime.
+await Accessibility.setAssistant({ assistant: true });
 ```
 
 `icon` is an Android drawable resource name (no extension, no
@@ -506,6 +651,17 @@ unchanged through the native layer — useful for parameterised actions
 (e.g. opening a specific note id). On a cold-start launch from a shortcut,
 `payload` is recovered from the intent extra, not the JS list, so it is
 available before `setShortcuts` has run.
+
+`setAssistant(payload)` publishes the payload for the system assistant
+trigger (`ACTION_ASSIST`, Android only, when built with
+`app.assistant: true`). The trigger always opens the app as the fixed
+`assistant` action — only the payload is app-defined. The payload may be
+any JSON-serializable value: the runtime serializes it for the native
+layer and parses it back into the original JS value before the event is
+delivered (plain strings pass through unchanged). The payload is
+persisted natively so a cold-start trigger (before the webview boots)
+still carries it; passing `null` clears it. No-op on iOS and browser
+builds.
 
 The connect app owns the single source of truth for the action set; native
 code only carries `{ id, label, icon, payload }` in and `{ id, payload }`
@@ -761,6 +917,7 @@ See `plugins.config.js` for the canonical list. As of writing:
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
 | `tauri-plugin-vistta`                      | Android background scheduler, fetch, socket, and standard clipboard bridge (runtime-owned, at `rust/plugin/`) |
 | `tauri-plugin-vistta-privileged-clipboard` | Android Shizuku/Sui clipboard monitor (runtime-owned, at `rust/privileged-clipboard-plugin/`)                 |
+| `tauri-plugin-audio-recorder`              | Cross-platform microphone recording (WAV on desktop, M4A on mobile)                                           |
 | `tauri-plugin-clipboard-manager`           | Clipboard access (read/write text, images, HTML; clear)                                                       |
 | `tauri-plugin-dialog`                      | Native dialogs                                                                                                |
 | `tauri-plugin-fs`                          | File system access                                                                                            |

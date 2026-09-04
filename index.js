@@ -43,6 +43,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {boolean} [app.fullscreen] - Start in fullscreen.
  * @property {boolean} [app.devTools] - Open DevTools on startup.
  * @property {boolean} [app.background] - Desktop only. When true, the app stays alive in the background (tray icon + hide-on-close). Has no effect on Android/iOS.
+ * @property {boolean} [app.assistant] - Android only. When true, the app registers an ASSIST intent-filter so it can be chosen as the system Digital Assistant app (long-press power / assistant gesture). The trigger opens the app with a `launch-action` `{ id: "assistant", payload }` where `payload` is the app-published payload set via `Accessibility.setAssistant()`. Has no effect on desktop/iOS.
  * @property {string} [app.version] - App version (forwarded to bundle versioning; used to disambiguate desktop installers).
  * @property {string} [title] - Window title.
  * @property {string} [icon] - Icon path (relative to buildDir/www).
@@ -184,7 +185,7 @@ export async function build(config) {
       const androidGen = fs.resolve(cwd, "gen", "android");
       if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
       await patchBuildTask(cwd, config);
-      await patchAndroidManifest(cwd);
+      await patchAndroidManifest(cwd, config);
       await patchMainActivity(cwd, config);
       await patchAndroidStrings(cwd, config);
       await patchAppGradleSigning(cwd, config);

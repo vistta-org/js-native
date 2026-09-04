@@ -41,6 +41,8 @@ object VisttaShortcuts {
     const val ACTION_LAUNCH_SHORTCUT = "org.vistta.runtime.LAUNCH_SHORTCUT"
     const val EXTRA_SHORTCUT_ID = "vistta.shortcut.id"
     const val EXTRA_SHORTCUT_PAYLOAD = "vistta.shortcut.payload"
+    private const val PREFS = "vistta.shortcuts"
+    private const val PREF_ASSISTANT_PAYLOAD = "assistant_payload"
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -114,9 +116,39 @@ object VisttaShortcuts {
     }
 
     /**
+     * Stores the app-published payload for the system assistant trigger
+     * (`android.intent.action.ASSIST`). Called from JS via the
+     * `VisttaShortcuts` JavascriptInterface bridge; the payload is persisted
+     * in shared preferences so a cold-start ASSIST trigger (before the
+     * webview has booted and JS has called [setAssistant]) still carries it.
+     * An empty string clears the stored payload.
+     *
+     * @param payload Opaque payload string forwarded unchanged in the
+     *   `launch-action` event; empty string clears.
+     */
+    @android.webkit.JavascriptInterface
+    fun setAssistant(payload: String?) {
+        val context = activityRef?.get()?.applicationContext ?: return
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_ASSISTANT_PAYLOAD, payload ?: "")
+                .apply()
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to persist assistant payload: ${t.message}")
+        }
+    }
+
+    /**
      * Called by [MainActivity] from `onCreate` / `onNewIntent` when the
      * activity was launched via a shortcut intent. Extracts the id + payload
      * and dispatches a `launch-action` event into the webview.
+     *
+     * Also handles the system assistant trigger
+     * (`android.intent.action.ASSIST`) when the app is registered as the
+     * Digital Assistant app: dispatches a `launch-action` with
+     * id "assistant" and the app-published payload (persisted via
+     * [setAssistant]).
      *
      * If the webview is not yet attached (cold start before `VisttaPlugin`
      * has run), the action is stashed and re-dispatched once
@@ -124,10 +156,28 @@ object VisttaShortcuts {
      */
     fun dispatchIntent(intent: Intent?) {
         if (intent == null) return
-        if (ACTION_LAUNCH_SHORTCUT != intent.action) return
-        val id = intent.getStringExtra(EXTRA_SHORTCUT_ID) ?: return
-        val payload = intent.getStringExtra(EXTRA_SHORTCUT_PAYLOAD)
-        deliverLaunchAction(id, payload)
+        when (intent.action) {
+            ACTION_LAUNCH_SHORTCUT -> {
+                val id = intent.getStringExtra(EXTRA_SHORTCUT_ID) ?: return
+                val payload = intent.getStringExtra(EXTRA_SHORTCUT_PAYLOAD)
+                deliverLaunchAction(id, payload)
+            }
+            Intent.ACTION_ASSIST -> {
+                val payload = storedAssistantPayload()
+                deliverLaunchAction("assistant", if (payload.isNullOrEmpty()) null else payload)
+            }
+        }
+    }
+
+    private fun storedAssistantPayload(): String? {
+        val context = activityRef?.get()?.applicationContext ?: return null
+        return try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(PREF_ASSISTANT_PAYLOAD, null)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to read assistant payload: ${t.message}")
+            null
+        }
     }
 
     /** Pending action to deliver once the webview attaches. */

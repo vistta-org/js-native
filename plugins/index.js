@@ -6,6 +6,7 @@ export * as Accessibility from "./accessibility.js";
 export * as Clipboard from "./clipboard.js";
 export * as Net from "./net/index.js";
 export * as PrivilegedClipboard from "./privileged-clipboard.js";
+export * as Recorder from "./recorder.js";
 export * as Scheduler from "./scheduler.js";
 export * as Shell from "./shell.js";
 export * as System from "./system.js";

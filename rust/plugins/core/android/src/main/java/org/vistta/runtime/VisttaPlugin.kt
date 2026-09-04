@@ -17,6 +17,14 @@
 //   VisttaShortcuts — publish dynamic launcher shortcuts (ShortcutManager)
 //                     and dispatch launch-action intents into the webview
 //                     (see VisttaShortcuts).
+//   VisttaVad       — parallel AudioRecord RMS tap feeding live loudness to
+//                     JS for silence-aware recording auto-stop (see
+//                     VisttaVad).
+//
+// Microphone recording goes through tauri-plugin-audio-recorder; screen
+// recording is owned by VisttaScreenRecorder (registered as Tauri commands
+// `start_screen_recording` / `stop_screen_recording` on this plugin and
+// driven from JS via `vistta|*` invokes).
 //
 // The plugin also creates the default notification channel used by the
 // Tauri notification plugin, and publishes the webview reference to
@@ -42,11 +50,13 @@ import app.tauri.plugin.Plugin
 class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
 
     private var webView: WebView? = null
+    private lateinit var screenRecorder: VisttaScreenRecorder
 
     override fun load(webView: WebView) {
         super.load(webView)
         this.webView = webView
         ensureDefaultNotificationChannel()
+        screenRecorder = VisttaScreenRecorder(this, activity)
         VisttaService.attachWebView(webView)
         VisttaNetwork.attachWebView(webView)
         VisttaNetwork.attachContext(activity)
@@ -62,6 +72,7 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         webView.addJavascriptInterface(visttaThemeBridge, "VisttaTheme")
         webView.addJavascriptInterface(VisttaInstaller, "VisttaInstaller")
         webView.addJavascriptInterface(VisttaShortcuts, "VisttaShortcuts")
+        webView.addJavascriptInterface(VisttaVad, "VisttaVad")
     }
 
     private fun ensureDefaultNotificationChannel() {

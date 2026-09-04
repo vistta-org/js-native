@@ -30,6 +30,21 @@ export const PLUGINS = [
   VISTTA_PLUGIN,
   PRIVILEGED_CLIPBOARD_PLUGIN,
   {
+    id: "audio-recorder",
+    crate: "tauri-plugin-audio-recorder",
+    version: "0.1",
+    permissions: [
+      "audio-recorder:allow-start-recording",
+      "audio-recorder:allow-stop-recording",
+      "audio-recorder:allow-pause-recording",
+      "audio-recorder:allow-resume-recording",
+      "audio-recorder:allow-get-status",
+      "audio-recorder:allow-check-permission",
+      "audio-recorder:allow-request-permission",
+      "audio-recorder:allow-get-devices",
+    ],
+  },
+  {
     id: "clipboard-manager",
     crate: "tauri-plugin-clipboard-manager",
     version: "2",
@@ -72,6 +87,7 @@ export const PLUGINS = [
         allow: [
           { path: "$APPDATA/**" },
           { path: "$APPCONFIG/**" },
+          { path: "$APPCACHE/**" },
           { path: "$DOWNLOAD/**" },
           { path: "$DOCUMENT/**" },
           { path: "$PICTURE/**" },

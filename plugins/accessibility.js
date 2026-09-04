@@ -50,7 +50,7 @@ import { listen } from "@tauri-apps/api/event";
  *   (e.g. opening a specific note id).
  */
 
-/** @type {((e: { id: string, payload?: string }) => void) | null} */
+/** @type {((e: { id: string, payload?: any }) => void) | null} */
 let handler = null;
 let installed = false;
 
@@ -86,11 +86,23 @@ function ensureListener() {
 }
 
 /**
- * Internal: invoke the registered handler for an action id.
+ * Internal: invoke the registered handler for an action id. JSON
+ * object/array payloads are parsed back into their JS value; any other
+ * payload passes through unchanged.
  * @param {string} id
- * @param {string} [payload]
+ * @param {any} [payload]
  */
 function dispatch(id, payload) {
+  if (typeof payload === "string") {
+    const s = payload.trimStart();
+    if (s.startsWith("{") || s.startsWith("[")) {
+      try {
+        payload = JSON.parse(s);
+      } catch {
+        /* not JSON — deliver the raw string */
+      }
+    }
+  }
   if (handler) {
     try {
       handler({ id, payload });
@@ -146,14 +158,52 @@ export async function setShortcuts(shortcuts) {
 }
 
 /**
+ * Publishes the payload the system assistant trigger (Android Digital
+ * Assistant app — long-press power / assistant gesture, `ACTION_ASSIST`)
+ * delivers when the app is built with `app.assistant: true`. Payload-only:
+ * the trigger always opens the app as the `assistant` action.
+ *
+ * The payload may be any JSON-serializable value — objects/arrays are
+ * serialized by the runtime for the native layer and parsed back into their
+ * JS value before the `launch-action` event is delivered — or a plain
+ * string, which is forwarded unchanged.
+ *
+ * The payload is forwarded to the native bridge so it survives a cold start
+ * (the JS list is not available until the webview boots).
+ *
+ * Safe to call repeatedly. Passing `null`/`undefined` clears the payload.
+ * No-op on iOS and browser builds.
+ *
+ * @param {any} [payload] - Payload delivered in the `launch-action` event's
+ *   `payload` field. Serialization is handled by the runtime.
+ * @returns {Promise<boolean>} Resolves `true` if a native surface accepted
+ *   the payload, `false` if no surface was available.
+ */
+export async function setAssistant(payload) {
+  const bridge = getBridge();
+  if (bridge) {
+    try {
+      if (typeof bridge.setAssistant === "function")
+        bridge.setAssistant(payload == null ? "" : typeof payload === "string" ? payload : JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Registers a handler invoked whenever a quick-action is triggered, whether
  * from the desktop tray menu or an Android launcher shortcut. Replaces any
  * previously registered handler.
  *
  * The handler receives `{ id, payload? }`. `payload` is the opaque string
  * set on the `Shortcut` (if any); native surfaces pass it through unchanged.
+ * The assistant trigger's payload is the value published via `setAssistant`
+ * (objects are parsed back from JSON before delivery).
  *
- * @param {(action: { id: string, payload?: string }) => void} callback
+ * @param {(action: { id: string, payload?: any }) => void} callback
  * @returns {() => void} Unsubscribe function — removes the handler.
  */
 export function onLaunchAction(callback) {
