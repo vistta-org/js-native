@@ -702,10 +702,22 @@ async function nativeAudioBlob(filePath) {
  */
 function attachNativeVad(autoStop, requestStop, emitVad) {
   const bridge = typeof window !== "undefined" ? /** @type {any} */ (window).VisttaVad : null;
-  if (bridge && typeof bridge.start === "function") {
+  if (bridge && typeof bridge.start === "function" && typeof bridge.sample === "function") {
     const watcher = new SilenceWatcher(autoStop, requestStop, emitVad);
-    bridge.start((rms) => watcher.feed(Number(rms) || 0));
-    return { stop: () => bridge.stop() };
+    let lastSampleCount = 0;
+    bridge.start();
+    const timer = setInterval(() => {
+      const sampleCount = Number(bridge.sampleCount?.()) || 0;
+      if (sampleCount === lastSampleCount) return;
+      lastSampleCount = sampleCount;
+      watcher.feed(Number(bridge.sample()) || 0);
+    }, 100);
+    return {
+      stop: () => {
+        clearInterval(timer);
+        bridge.stop();
+      },
+    };
   }
   // Desktop Tauri fallback: parallel getUserMedia tap feeding the web VAD.
   let stopped = false;

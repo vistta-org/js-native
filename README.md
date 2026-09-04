@@ -583,10 +583,12 @@ cut short. Manual stop always wins if it happens first.
 Live loudness is sourced per platform: browser/desktop fork the recorded
 stream into a Web Audio `AnalyserNode` (a parallel tap — the recording is
 untouched); Android uses the runtime's `VisttaVad` bridge (a parallel
-`AudioRecord` tap, since the WebView media stack is bypassed there). On
-desktop Tauri the tap runs via a parallel `getUserMedia` stream; if that is
-denied, auto-stop degrades to manual-only. Recording itself is unchanged by
-the VAD — it only triggers the existing stop path.
+`AudioRecord` tap, since the WebView media stack is bypassed there). The
+bridge exposes its latest RMS and sample count as primitive values, which the
+JS watcher polls every 100 ms. On desktop Tauri the tap runs via a parallel
+`getUserMedia` stream; if that is denied, auto-stop degrades to manual-only.
+Recording itself is unchanged by the VAD — it only triggers the existing stop
+path.
 
 ### Accessibility
 
