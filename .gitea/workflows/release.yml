@@ -22,7 +22,7 @@ on:
         type: boolean
 
 env:
-  module: js-runtime
+  module: js-native
   ref: refs/heads/development
 jobs:
   Validation:

@@ -1,6 +1,6 @@
 // The runtime's own plugin crate. Lives at `rust/plugins/core/` inside this
 // package and is wired into the generated Cargo.toml as a path dependency
-// pointing at `@vistta/js-runtime/rust/plugins/core`. On Android it registers the
+// pointing at `@vistta/js-native/rust/plugins/core`. On Android it registers the
 // Kotlin VisttaPlugin (foreground service + background fetch + socket
 // bridge); on desktop/iOS it is a no-op. `permissions: []` and `noCommands:
 // true` keep it out of the generated capabilities file — the plugin exposes

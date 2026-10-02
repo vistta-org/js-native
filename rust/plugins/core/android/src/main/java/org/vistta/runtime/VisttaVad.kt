@@ -8,7 +8,7 @@
 // through primitive JavascriptInterface methods so the JS side can run its
 // shared SilenceWatcher unchanged.
 //
-// JS contract (see packages/js-runtime/plugins/recorder.js):
+// JS contract (see packages/js-native/plugins/recorder.js):
 //   window.VisttaVad.start() — begins sampling.
 //   window.VisttaVad.sample() — returns the latest 0..1 RMS value.
 //   window.VisttaVad.sampleCount() — returns the number of captured samples.

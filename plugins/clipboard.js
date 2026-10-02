@@ -4,7 +4,7 @@
  * Extends the Tauri clipboard-manager surface (`readText`, `writeText`,
  * `readImage`, `writeImage`, `writeHtml`, `clear`) with a background-watch
  * API. Everything is re-exported as named exports so
- * `import { Clipboard } from "@vistta/js-runtime/plugins"` gives a flat
+ * `import { Clipboard } from "@vistta/js-native/plugins"` gives a flat
  * namespace: `Clipboard.readText()`, `Clipboard.watchBackground()`, etc.
  *
  * Android restricts normal clipboard reads to the focused app. When the user

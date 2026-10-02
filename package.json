@@ -1,5 +1,5 @@
 {
-  "name": "@vistta/js-runtime",
+  "name": "@vistta/js-native",
   "version": "0.1.0",
   "description": "Vistta.js App Runtime - Tauri backend for all platforms (mobile, desktop, web)",
   "main": "index.js",

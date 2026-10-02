@@ -1,4 +1,4 @@
-# @vistta/js-runtime
+# @vistta/js-native
 
 Unified runtime for building cross-platform applications (mobile, desktop, web) using **Tauri v2**.
 
@@ -12,13 +12,13 @@ Unified runtime for building cross-platform applications (mobile, desktop, web) 
 ## Installation
 
 ```bash
-npm install @vistta/js-runtime
+npm install @vistta/js-native
 ```
 
 ## Quick Start
 
 ```javascript
-import { Tauri } from "@vistta/js-runtime";
+import { Tauri } from "@vistta/js-native";
 
 // Launches `tauri dev` for desktop, `tauri android dev` for Android.
 await Tauri.run({
@@ -36,7 +36,7 @@ await Tauri.run({
 `run` and `build` are also available as named exports:
 
 ```javascript
-import { run, build } from "@vistta/js-runtime";
+import { run, build } from "@vistta/js-native";
 ```
 
 ## API
@@ -148,7 +148,7 @@ await Tauri.build({
 The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to the build output directory using a versioned name derived from `artifactName()`:
 
 ```javascript
-import { build, artifactName } from "@vistta/js-runtime";
+import { build, artifactName } from "@vistta/js-native";
 
 const { type, paths } = await build({ platform: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
 for (const sourcePath of paths) {
@@ -386,7 +386,7 @@ await Tauri.build({
 
 ## Integrations
 
-Import plugin namespaces from `@vistta/js-runtime/plugins`:
+Import plugin namespaces from `@vistta/js-native/plugins`:
 
 ```javascript
 import {
@@ -401,7 +401,7 @@ import {
   Shortcuts,
   Accessibility,
   System,
-} from "@vistta/js-runtime/plugins";
+} from "@vistta/js-native/plugins";
 ```
 
 `System` re-exports the Tauri core API modules (`@tauri-apps/api/app` and `@tauri-apps/api/path`) under one flat namespace — e.g. `System.getVersion()` and `System.downloadDir()`.
@@ -412,7 +412,7 @@ On Android 13+, the runtime permission **must** be requested before posting.
 Use the bundled helper:
 
 ```javascript
-import { Notification, ensureNotificationPermission } from "@vistta/js-runtime/plugins";
+import { Notification, ensureNotificationPermission } from "@vistta/js-native/plugins";
 
 if (await ensureNotificationPermission()) {
   await Notification.sendNotification({ title: "Hello", body: "From Vistta" });
@@ -426,7 +426,7 @@ launcher icon will not display in the status bar.
 ### Filesystem
 
 ```javascript
-import { Filesystem } from "@vistta/js-runtime/plugins";
+import { Filesystem } from "@vistta/js-native/plugins";
 await Filesystem.writeFile({ path: "test.txt", data: "Hello" });
 const { data } = await Filesystem.readFile({ path: "test.txt" });
 ```
@@ -434,7 +434,7 @@ const { data } = await Filesystem.readFile({ path: "test.txt" });
 ### Haptics
 
 ```javascript
-import { Haptics } from "@vistta/js-runtime/plugins";
+import { Haptics } from "@vistta/js-native/plugins";
 await Haptics.impactFeedback({ style: "medium" });
 await Haptics.vibrate(100);
 ```
@@ -448,7 +448,7 @@ one flat namespace (the two modules have no overlapping export names):
 - Path helpers — `downloadDir`, `appDataDir`, `join`, `resolve`, `sep`, etc.
 
 ```javascript
-import { System } from "@vistta/js-runtime/plugins";
+import { System } from "@vistta/js-native/plugins";
 const version = await System.getVersion();
 const dir = await System.downloadDir();
 const dest = await System.join(dir, "update.exe");
@@ -496,7 +496,7 @@ Events:
   permission dialog is surfaced by the WebView/browser.
 
 ```javascript
-import { Recorder } from "@vistta/js-runtime/plugins";
+import { Recorder } from "@vistta/js-native/plugins";
 
 // Call from a user gesture (mic button, etc.).
 const recording = await Recorder.startAudioRecording();
@@ -612,7 +612,7 @@ and routes triggers back into JS.
   fires.
 
 ```javascript
-import { Accessibility } from "@vistta/js-runtime/plugins";
+import { Accessibility } from "@vistta/js-native/plugins";
 
 // Publish the current action set. Safe to call again later to update it
 // (e.g. when a feature is enabled/disabled in settings).
@@ -685,7 +685,7 @@ Requires the `REQUEST_INSTALL_PACKAGES` permission (declared in the core
 plugin's `AndroidManifest.xml`, merged into the host app at build time).
 
 ```javascript
-import { Shell } from "@vistta/js-runtime/plugins";
+import { Shell } from "@vistta/js-native/plugins";
 await Shell.open("/path/to/update.apk");
 await Shell.open("https://github.com/vistta/vistta");
 ```
@@ -707,7 +707,7 @@ import {
   clearBackgroundInterval,
   setBackgroundTimeout,
   clearBackgroundTimeout,
-} from "@vistta/js-runtime/plugins";
+} from "@vistta/js-native/plugins";
 
 const id = setBackgroundInterval(() => {
   socket.send({ type: "ping", ts: Date.now() });
@@ -739,7 +739,7 @@ firing while the user has me in their pocket." Use Android's native
 
 #### Background `fetch` override (Android)
 
-On Android, the `fetch` exported from `@vistta/js-runtime/plugins` is
+On Android, the `fetch` exported from `@vistta/js-native/plugins` is
 routed through the `VisttaNetwork` OkHttp client (running in the
 foreground service) whenever the `VisttaFetch` bridge is present. This
 means `fetch()` calls complete even when the activity is paused — the
@@ -748,7 +748,7 @@ the bridge is absent (desktop, web, iOS, or before the activity injects
 the bridge), `fetch` falls through to the regular `window.fetch`.
 
 > **Note:** this applies to the `fetch` function imported from
-> `@vistta/js-runtime/plugins`, not to `window.fetch` globally. The
+> `@vistta/js-native/plugins`, not to `window.fetch` globally. The
 > runtime does not monkey-patch `window.fetch`.
 
 The override is what makes background polling work: while the activity
@@ -776,7 +776,7 @@ Android. Limitations to be aware of:
 ## Clipboard
 
 ```javascript
-import { Clipboard } from "@vistta/js-runtime/plugins";
+import { Clipboard } from "@vistta/js-native/plugins";
 
 // Read/write the system clipboard (Tauri clipboard-manager commands).
 await Clipboard.writeText("hello");
@@ -798,7 +798,7 @@ desktop, iOS, or standard Android, it falls back to polling `readText()` on a
 Android 10+).
 
 ```javascript
-import { Clipboard } from "@vistta/js-runtime/plugins";
+import { Clipboard } from "@vistta/js-native/plugins";
 
 const stop = Clipboard.watchBackground((text) => {
   console.log("clipboard changed:", text);

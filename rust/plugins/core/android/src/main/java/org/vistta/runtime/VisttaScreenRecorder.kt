@@ -9,7 +9,7 @@
 //                          an MP4 to filePath.
 //   stop(id)             → stops the capture and finalises the MP4.
 //
-// JS contract (see packages/js-runtime/plugins/recorder.js):
+// JS contract (see packages/js-native/plugins/recorder.js):
 //   invoke("vistta|start_screen_recording", { id, filePath }) → resolves once
 //     the consent dialog is granted and capture has begun; rejects if denied.
 //   invoke("vistta|stop_screen_recording", { id }) → resolves after the file
