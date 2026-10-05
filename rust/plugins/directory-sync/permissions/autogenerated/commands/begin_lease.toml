@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-begin-lease"
+description = "Enables the begin_lease command without any pre-configured scope."
+commands.allow = ["begin_lease"]
+
+[[permission]]
+identifier = "deny-begin-lease"
+description = "Denies the begin_lease command without any pre-configured scope."
+commands.deny = ["begin_lease"]

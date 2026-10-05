@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-commit-write"
+description = "Enables the commit_write command without any pre-configured scope."
+commands.allow = ["commit_write"]
+
+[[permission]]
+identifier = "deny-commit-write"
+description = "Denies the commit_write command without any pre-configured scope."
+commands.deny = ["commit_write"]

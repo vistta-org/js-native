@@ -1,0 +1,18 @@
+[default]
+description = "Allows scoped directory synchronization with recovery."
+permissions = [
+  "allow-select-root",
+  "allow-probe-root",
+  "allow-start-scan",
+  "allow-next-scan-page",
+  "allow-cancel-operation",
+  "allow-begin-lease",
+  "allow-end-lease",
+  "allow-hash-file",
+  "allow-read-file-chunk",
+  "allow-begin-write",
+  "allow-write-chunk",
+  "allow-commit-write",
+  "allow-abort-write",
+  "allow-recover-root",
+]

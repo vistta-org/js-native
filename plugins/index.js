@@ -1,9 +1,9 @@
 export * as Dialog from "@tauri-apps/plugin-dialog";
-export * as Filesystem from "@tauri-apps/plugin-fs";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
 export * as Accessibility from "./accessibility.js";
 export * as Clipboard from "./clipboard.js";
+export * as Filesystem from "./filesystem/index.js";
 export * as Net from "./net/index.js";
 export * as PrivilegedClipboard from "./privileged-clipboard.js";
 export * as Recorder from "./recorder.js";

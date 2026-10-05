@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-probe-root"
+description = "Enables the probe_root command without any pre-configured scope."
+commands.allow = ["probe_root"]
+
+[[permission]]
+identifier = "deny-probe-root"
+description = "Denies the probe_root command without any pre-configured scope."
+commands.deny = ["probe_root"]

@@ -26,9 +26,18 @@ export const PRIVILEGED_CLIPBOARD_PLUGIN = {
   noCommands: true,
 };
 
+export const DIRECTORY_SYNC_PLUGIN = {
+  id: "directory-sync",
+  crate: "tauri-plugin-directory-sync",
+  version: "1",
+  path: "./rust/plugins/directory-sync",
+  permissions: ["directory-sync:default"],
+};
+
 export const PLUGINS = [
   VISTTA_PLUGIN,
   PRIVILEGED_CLIPBOARD_PLUGIN,
+  DIRECTORY_SYNC_PLUGIN,
   {
     id: "audio-recorder",
     crate: "tauri-plugin-audio-recorder",
@@ -73,15 +82,20 @@ export const PLUGINS = [
     id: "fs",
     crate: "tauri-plugin-fs",
     version: "2",
+    cargoFeatures: '"watch"',
     permissions: [
       "fs:allow-read-file",
       "fs:allow-write-file",
       "fs:allow-read-dir",
+      "fs:allow-open",
+      "fs:allow-lstat",
+      "fs:allow-stat",
       "fs:allow-mkdir",
       "fs:allow-remove",
       "fs:allow-exists",
       "fs:allow-rename",
       "fs:allow-copy-file",
+      "fs:allow-watch",
       {
         identifier: "fs:scope",
         allow: [

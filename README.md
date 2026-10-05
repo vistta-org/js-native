@@ -295,6 +295,12 @@ background scheduler (see [Scheduler](#scheduler) below).
   privileged clipboard backends. It currently provides opt-in Shizuku/Sui
   monitoring and owns the Shizuku provider, permissions, Binder monitor, and
   `VisttaPrivilegedClipboard` JavaScript bridge.
+- `tauri-plugin-directory-sync` (at `rust/plugins/directory-sync/`) —
+  the Windows/Linux and Android filesystem boundary for directory sync. It
+  owns contained scans, hashing, checked chunk reads, staged writes,
+  recoverable replacement, retained old copies, cancellation, and Android SAF
+  tree grants. Bounded Android operations hold a `dataSync` foreground-service
+  lease. Its permissions are generated into the host capability file.
 - `patchAndroidStrings` — keeps launcher label + activity title in sync with
   `tauri.conf.json`
 - `patchAndroidManifest` — sets the generated main activity to
@@ -430,6 +436,72 @@ import { Filesystem } from "@vistta/js-native/plugins";
 await Filesystem.writeFile({ path: "test.txt", data: "Hello" });
 const { data } = await Filesystem.readFile({ path: "test.txt" });
 ```
+
+`Filesystem` also provides the native directory-sync boundary:
+
+```javascript
+import { Filesystem } from "@vistta/js-native/plugins";
+
+const capability = await Filesystem.probeDirectorySync(directoryPath);
+const selection = await Filesystem.selectSyncDirectory();
+
+if (selection) {
+  for await (const page of Filesystem.scanSyncDirectory(selection.path)) {
+    if (page.complete) console.log(`Complete scan: ${page.count} entries`);
+  }
+
+  const source = await Filesystem.hashSyncFile(selection.path, "folder/file.bin");
+  for await (const chunk of Filesystem.readSyncFileChunks(selection.path, "folder/file.bin", {
+    fingerprint: source.fingerprint,
+  })) {
+    await upload(chunk);
+  }
+}
+```
+
+On desktop, selection uses the native folder picker and normal persistent OS
+path access. On Android it uses `ACTION_OPEN_DOCUMENT_TREE` and retains the
+read/write URI grant; a revoked or incomplete grant fails the probe. No broad
+external-storage permission is requested. Capabilities distinguish streaming,
+hashing, source revalidation, stable identity, watch support, and atomic,
+durable, or merely recoverable replacement. SAF providers report atomic and
+durable replacement as false even when their retained-copy sequence is usable.
+
+`scanSyncDirectory()` performs a native recursive scan and yields deterministic
+pages of at most 256 entries. Desktop revalidates every visited directory;
+Android fingerprints and re-queries every provider child listing. Both reject
+links or unsupported entries, non-NFC/non-portable names, and case-fold
+collisions. Consumers must discard all pages unless the final page has
+`complete: true`. Entries are written to an OS/app-cache spool and consumed in
+strictly sequential bounded pages; an independent second walk must produce the
+same count and digest before the first page is exposed.
+
+`hashSyncFile()` streams SHA-256 with before/after metadata checks.
+`readSyncFileChunks()` yields at most 1 MiB, checks every chunk against the
+source fingerprint, then hashes the source again before the iterator completes;
+callers must not commit uploaded content until iteration completes. Abort
+signals cancel native scans and hashes.
+
+Writes use `beginSyncFileWrite()`, `writeSyncFileChunk()`, and
+`commitSyncFileWrite()`, or the `replaceSyncFile()` convenience helper. Desktop
+flushes staged bytes, the replacement, and parent directories around atomic
+same-filesystem renames. Android flushes its provider descriptor and uses an
+immutable manifest plus prepared/backup/committed markers around provider
+renames. Both retain the old copy for 30 days. `recoverSyncDirectory()` finishes
+or rolls back interrupted commits and reports ambiguous states without
+resurrecting a committed backup after a later deletion. `watchSyncDirectory()`
+uses recursive desktop notifications plus polling; Android polls. Notifications
+are reconciliation hints, never deletion evidence.
+
+Android scans, hashes, writes, recovery, and streamed reads hold a bounded
+`foregroundServiceType="dataSync"` lease. The service stops when the operation
+finishes and implements the platform timeout callback; it does not make an
+unbounded WebView task durable or bypass Android background-start restrictions.
+
+The Rust implementation and Android Kotlin module have compile coverage, and
+desktop recovery behavior has focused tests. Real Linux filesystems and Android
+SAF providers still require the documented interruption/revocation field matrix;
+Connect Sync rules remain disabled until that evidence and reconciliation exist.
 
 ### Haptics
 
