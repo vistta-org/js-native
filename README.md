@@ -347,6 +347,16 @@ background scheduler (see [Scheduler](#scheduler) below).
   `{ id: "assistant", payload }`; the payload is published by JS via
   `Accessibility.setAssistant` (see [Accessibility](#accessibility)) and
   persisted natively for cold starts. Has no effect on desktop/iOS.
+- Android `app.autofill: true` — registers the API 26+ AutofillService and
+  authentication activity in the generated Android manifest, plus a launcher-app
+  `<queries>` entry so the service can read target apps' signing certificates on
+  Android 11+. Suggestions are also offered as keyboard inline chips on Android 11+
+  (via `androidx.autofill`). It is off by
+  default. The native runtime dispatches short-lived requests into the main
+  Tauri WebView; apps subscribe through `Accessibility.onAutofillRequest` and
+  must keep their vault unlocked. No credential is persisted in the
+  native service. Generated manifest entries are removed when the flag is off.
+  This integration has not been verified on an Android device.
 - Desktop `app.background: true` — keeps the app alive in the background (tray
   icon + hide-on-close). The `tray-icon` Cargo feature is conditionally added.
   The tray menu is dynamic: JS publishes quick-actions via `Accessibility.setShortcuts`
@@ -715,6 +725,17 @@ Accessibility.onLaunchAction(({ id, payload }) => {
 // serialization is handled by the runtime.
 await Accessibility.setAssistant({ assistant: true });
 ```
+
+On Android builds with `app.autofill: true`, `Accessibility.hasAutofill()`
+reports whether the native transport is available. Use
+`Accessibility.isAutofillEnabled()` to check system selection and
+`Accessibility.openAutofillSettings()` to request it. Subscribe with
+`Accessibility.onAutofillRequest(async ({ operation, data }) => response)`;
+the returned function unsubscribes. Operations are `query`, `select`, and
+`save`. The handler must return no credentials for a locked session, and
+decrypt only on `select`. The Android `VisttaAutofill` JavascriptInterface
+remains an internal transport; application code should not access it or
+install a handler on `window`.
 
 `icon` is an Android drawable resource name (no extension, no
 `R.drawable.` prefix) bundled with the app; it is ignored on desktop

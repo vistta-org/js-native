@@ -72,6 +72,8 @@ export async function patchBuildTask(targetDir, config) {
 }
 
 const ASSIST_MARKER = "<!-- vistta:assistant -->";
+const AUTOFILL_BEGIN = "<!-- vistta:autofill:begin -->";
+const AUTOFILL_END = "<!-- vistta:autofill:end -->";
 
 /**
  * Patches Tauri's generated `AndroidManifest.xml`:
@@ -112,7 +114,39 @@ export async function patchAndroidManifest(targetDir, config) {
     // Flag removed — strip the marker comment and the filter block after it.
     content = content.replace(new RegExp(`\\s*${ASSIST_MARKER}[\\s\\S]*?</intent-filter>`), "");
   }
+  content = content.replace(new RegExp(`\\s*${AUTOFILL_BEGIN}[\\s\\S]*?${AUTOFILL_END}`, "g"), "");
+  if (config?.app?.autofill) {
+    // Android 11+ package visibility: needed to read target apps' signing certificates.
+    const queries = `${AUTOFILL_BEGIN}
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    ${AUTOFILL_END}`;
+    content = content.replace(/(\s*)<application\b/, `\n    ${queries}$1<application`);
+    const service = `${AUTOFILL_BEGIN}
+        <service android:name="org.vistta.runtime.VisttaAutofillService"
+            android:exported="true"
+            android:permission="android.permission.BIND_AUTOFILL_SERVICE"
+            android:label="${escapeXml(config.app.name || "Vistta Autofill")}">
+            <intent-filter>
+                <action android:name="android.service.autofill.AutofillService" />
+            </intent-filter>
+            <meta-data android:name="android.autofill" android:resource="@xml/vistta_autofill" />
+        </service>
+        <activity android:name="org.vistta.runtime.VisttaAutofillActivity" android:exported="false" />
+        <activity android:name="org.vistta.runtime.VisttaAutofillUnlockActivity" android:exported="false"
+            android:excludeFromRecents="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        ${AUTOFILL_END}`;
+    content = content.replace("</application>", `    ${service}\n    </application>`);
+  }
   await writeIfChanged(manifestPath, content);
+}
+
+function escapeXml(value) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function hasAssistantIntentFilter(content) {

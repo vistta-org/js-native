@@ -214,3 +214,53 @@ export function onLaunchAction(callback) {
     if (handler === callback) handler = null;
   };
 }
+
+function getAutofillBridge() {
+  return typeof window !== "undefined" ? /** @type {any} */ (window).VisttaAutofill : null;
+}
+
+export function hasAutofill() {
+  return !!getAutofillBridge();
+}
+
+export function isAutofillEnabled() {
+  try {
+    return getAutofillBridge()?.enabled() === true;
+  } catch {
+    return false;
+  }
+}
+
+export function openAutofillSettings() {
+  try {
+    const bridge = getAutofillBridge();
+    if (!bridge) return false;
+    bridge.openSettings();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function onAutofillRequest(callback) {
+  if (typeof callback !== "function") throw new TypeError("callback must be a function");
+  const bridge = getAutofillBridge();
+  if (!bridge) return () => {};
+  const handler = async (event) => {
+    const { id, operation, data } = event.detail || {};
+    if (typeof id !== "string" || !/^[a-f0-9]{48}$/.test(id) || !data || typeof data !== "object") return;
+    let result = {};
+    try {
+      result = (await callback({ operation, data })) || {};
+    } catch {
+      result = {};
+    }
+    try {
+      bridge.reply(id, JSON.stringify(result));
+    } catch {
+      return;
+    }
+  };
+  window.addEventListener("vistta-autofill-request", handler);
+  return () => window.removeEventListener("vistta-autofill-request", handler);
+}

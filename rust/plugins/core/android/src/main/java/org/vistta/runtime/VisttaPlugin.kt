@@ -64,6 +64,7 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         VisttaInstaller.attachActivity(activity)
         VisttaShortcuts.attachActivity(activity)
         VisttaShortcuts.attachWebView(webView)
+        VisttaAutofill.attach(webView, activity)
         VisttaShortcuts.flushPending()
         webView.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
@@ -72,6 +73,7 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         webView.addJavascriptInterface(visttaThemeBridge, "VisttaTheme")
         webView.addJavascriptInterface(VisttaInstaller, "VisttaInstaller")
         webView.addJavascriptInterface(VisttaShortcuts, "VisttaShortcuts")
+        webView.addJavascriptInterface(VisttaAutofill, "VisttaAutofill")
         webView.addJavascriptInterface(VisttaVad, "VisttaVad")
     }
 
