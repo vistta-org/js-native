@@ -114,6 +114,30 @@ export function disconnect(id) {
 }
 
 /**
+ * Re-opens a connection with new options (for example a refreshed `auth`
+ * token), keeping the id and every handler registered with `on()`.
+ *
+ * @param {string} id - Connection id from `connect()`.
+ * @param {string} url - The Socket.IO endpoint.
+ * @param {object} [opts] - Options for the new connection.
+ */
+export function reconnect(id, url, opts) {
+  if (id == null) return;
+  const b = getBridge();
+  if (b && typeof b.connect === "function") {
+    if (typeof b.disconnect === "function") b.disconnect(id);
+    b.connect(id, url, JSON.stringify(opts || {}));
+    return;
+  }
+  const real = realSockets.get(id);
+  if (real) {
+    if (opts?.auth) real.auth = opts.auth;
+    real.disconnect();
+    real.connect();
+  }
+}
+
+/**
  * Emits an event on the connection.
  *
  * @param {string} id - Connection id.
