@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Vistta.js runtime Android background scheduler, fetch, and socket bridge"
 edition = "2021"
 authors = ["Tiago Terenas Almeida <tiago@vistta.org>"]
-license = "Apache-2.0"
+license = "GPL-3.0-only"
 links = "tauri-plugin-vistta"
 
 [build-dependencies]
