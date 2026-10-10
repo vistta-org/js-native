@@ -18,21 +18,22 @@
   "author": "Tiago Terenas Almeida",
   "license": "GPL-3.0-only",
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/cli": "^2.11.2",
-    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.0.0",
-    "@tauri-apps/plugin-fs": "^2.0.0",
-    "@tauri-apps/plugin-haptics": "^2.0.0",
-    "@tauri-apps/plugin-notification": "^2.0.0",
-    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@tauri-apps/api": "^2.12.1",
+    "@tauri-apps/cli": "^2.12.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.4.1",
+    "@tauri-apps/plugin-dialog": "^2.8.1",
+    "@tauri-apps/plugin-fs": "^2.6.0",
+    "@tauri-apps/plugin-haptics": "^2.4.1",
+    "@tauri-apps/plugin-notification": "^2.5.1",
+    "@tauri-apps/plugin-shell": "^2.4.0",
     "@vistta/fs": "latest",
     "@vistta/utils": "latest",
     "tauri-plugin-audio-recorder-api": "^0.1.2"
   },
   "peerDependencies": {
-    "sharp": "^0.35.0",
-    "socket.io-client": "^4.8.3"
+    "@vistta/js": "^0.1.0",
+    "sharp": "^0.35.5",
+    "socket.io-client": "^4.8.4"
   },
   "engines": {
     "node": ">=22.0.0"
