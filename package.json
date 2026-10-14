@@ -1,6 +1,6 @@
 {
   "name": "@vistta/js-native",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Vistta.js App Runtime - Tauri backend for all platforms (mobile, desktop, web)",
   "main": "index.js",
   "exports": {
@@ -26,12 +26,12 @@
     "@tauri-apps/plugin-haptics": "^2.4.1",
     "@tauri-apps/plugin-notification": "^2.5.1",
     "@tauri-apps/plugin-shell": "^2.4.0",
-    "@vistta/fs": "latest",
-    "@vistta/utils": "latest",
+    "@vistta/fs": "^1.1.0",
+    "@vistta/utils": "^1.1.0",
     "tauri-plugin-audio-recorder-api": "^0.1.2"
   },
   "peerDependencies": {
-    "@vistta/js": "^0.1.0",
+    "@vistta/js": "^0.0.0",
     "sharp": "^0.35.5",
     "socket.io-client": "^4.8.4"
   },
