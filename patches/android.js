@@ -32,7 +32,7 @@ const STRINGS = { begin: "<!-- vistta:strings:begin -->", end: "<!-- vistta:stri
 // WRY's generated package tree never drifts and no cleanup is needed.
 
 /**
- * Rewrites Tauri 2.11.2's generated `BuildTask.kt` to call the `tauri` CLI
+ * Rewrites Tauri 2.12.1's generated `BuildTask.kt` to call the `tauri` CLI
  * binary directly, instead of going through `npm run -- tauri ...`. The
  * latter assumes the consumer's `package.json` has a `tauri` script; this
  * runtime reaches the tauri binary via `npx tauri` from `index.js`, not
@@ -372,7 +372,10 @@ export async function patchAppGradleSigning(targetDir, config) {
   if (releaseRe.test(content)) {
     content = content.replace(releaseRe, releaseSigningBlock);
   } else {
-    content = content.replace(/(getByName\("release"\) \{[\s\S]*?isMinifyEnabled = true)/, `$1\n${releaseSigningBlock}`);
+    // Anchor on the release buildType's opening line. Tauri 2.12 replaced
+    // the old `isMinifyEnabled = true` statement with an `optimization {` block,
+    // so anchoring right after the opening line covers both template shapes.
+    content = content.replace(/(getByName\("release"\) \{)/, `$1\n${releaseSigningBlock}`);
   }
 
   await writeIfChanged(appGradlePath, content);

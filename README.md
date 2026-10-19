@@ -252,6 +252,88 @@ vistta build [folder] android --target apk,aab
 vistta build [folder] app --target android=apk,windows=nsis
 ```
 
+## Native extension roadmap
+
+**Status: proposed, not implemented.** The goal is to let applications add
+Rust integrations without forking `@vistta/js-native` or editing generated
+`src-tauri/` files. Tauri v2 remains the native host and permission boundary;
+Vistta automates the integration plumbing rather than replacing it.
+
+Today, `plugins.config.js` contains the runtime's fixed plugin registry.
+`extraCargoDependencies` adds crates, but does not register their plugins or
+expose commands. The runtime regenerates the Rust entry points and Cargo
+manifest, so manual edits to those generated files are not durable.
+
+### Phase 1: Consumer-defined Tauri plugins
+
+- Define an application extension registry alongside the existing built-in
+  plugins. Final configuration names and schema are still to be decided.
+- Describe each extension's plugin identifier, Rust crate source (local path,
+  registry version, or Git revision), Cargo features, supported platforms,
+  initialization entry point, and available permissions.
+- Keep extension source outside the generated build directory. Resolve local
+  paths relative to a documented application configuration root, not the
+  runtime package.
+- Generate Cargo dependencies and plugin registration from the same resolved
+  registry, with matching platform guards, including Windows-only plugins.
+- Let applications explicitly grant extension permissions and scopes to
+  selected windows/webviews. Do not automatically grant every declared command.
+- Preserve standard Tauri plugin structure and independently maintained JS
+  wrappers. No generated bindings are required for this first phase.
+- Reject duplicate identifiers, conflicting dependency definitions, invalid
+  platform declarations, and missing local crates with actionable errors.
+
+**Acceptance:** an application can register a local Rust plugin, invoke a
+permitted command from JS, and rebuild without losing its source. An ungranted
+command is denied, and a Windows-only extension is absent from other targets.
+Existing applications without extensions retain their generated behavior.
+
+### Phase 2: Easier Rust authoring
+
+- Add scaffolding for a minimal extension crate with commands, permission
+  definitions, and optional setup, event, and cleanup handling.
+- Evaluate a maintained Rust-to-TypeScript binding generator before defining
+  a custom command or type schema. Generate wrappers and types only when an
+  extension opts in.
+- Document async commands, managed state, structured errors, event
+  subscriptions, unsubscription, and cleanup on shutdown or window removal.
+- Keep standard Tauri plugins as an escape hatch; avoid a second IPC protocol
+  or arbitrary Rust source strings embedded in application configuration.
+
+**Acceptance:** a sample extension exposes a typed command and an event
+subscription without hand-written registration or invoke wrappers, and cleans
+up its native resources when stopped.
+
+### Phase 3: Windows desktop integration pilot
+
+- Build a separate Windows extension to validate the registry against a real
+  widget application using `@vistta/js` and `@vistta/ui`.
+- Start with AppBar registration and screen-space reservation, non-activating
+  bar windows, monitor/DPI changes, and reliable unregistration.
+- Add active-window events and shared CPU/memory sampling for JS widgets;
+  keep native state and sampling centralized rather than polling per widget.
+- Treat audio/media controls, existing system-tray icon hosting, notification
+  history, and virtual desktops as later investigations, not initial promises.
+
+**Acceptance:** verify the bar on Windows across multiple monitors and DPI
+settings, fullscreen transitions, Explorer restart, and normal shutdown.
+Native resources and screen reservations must be released correctly.
+
+### Boundaries and verification
+
+- Rust extensions are compiled into the application. Adding or updating one
+  requires a rebuild; runtime loading of native plugins is out of scope.
+- Permissions restrict webview access to commands, not the extension's native
+  Rust code. Only include trusted crates and use reproducible dependency pins.
+- Extension authors still own OS API safety, thread affinity, native handles,
+  and platform-specific behavior. Widget authors can remain JS-only.
+- Add focused registry/generation tests for path resolution, platform guards,
+  permissions, conflicts, and repeatable regeneration, plus compile and IPC
+  coverage for a minimal consumer plugin. Use real Windows checks for the
+  desktop pilot; generation tests alone cannot prove desktop behavior.
+- Document the final configuration and a working example when each phase
+  ships. This roadmap does not introduce a usable extension API today.
+
 ## Android status
 
 The runtime supports foreground Android apps and a foreground-service-based
@@ -320,7 +402,7 @@ background scheduler (see [Scheduler](#scheduler) below).
   forward `org.vistta.runtime.LAUNCH_SHORTCUT` intents to `VisttaShortcuts`
   so they reach the webview as `launch-action` events (see
   [Accessibility](#accessibility)).
-- `patchBuildTask` — rewrites Tauri 2.11.2's `BuildTask.kt` to call the
+- `patchBuildTask` — rewrites Tauri 2.12.1's `BuildTask.kt` to call the
   `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
   the consumer's `package.json` doesn't need a `tauri` script
 - `patchCargoToml` / `patchLibRs` / `patchMainRs` — full file writes, no
