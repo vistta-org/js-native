@@ -387,7 +387,7 @@ function assertTauriVersion() {
 
 function resolveIconPath(config) {
   if (!config?.icon || !config?.buildDir) return null;
-  return fs.resolve(config.buildDir, "www", config.icon);
+  return fs.resolve(config.buildDir, "www", String(config.icon).replace(/^\/+/, ""));
 }
 
 function desktopBuildHint() {
