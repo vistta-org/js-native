@@ -45,6 +45,7 @@ export async function mergeConfig(targetDir, config) {
           minWidth: config?.app?.minWidth ?? 320,
           minHeight: config?.app?.minHeight ?? 480,
           center: config?.app?.center ?? true,
+          visible: config?.app?.visible ?? true,
           resizable: config?.app?.resizable ?? true,
           fullscreen: config?.app?.fullscreen ?? false,
           decorations: true,

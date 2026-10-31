@@ -74,6 +74,7 @@ export async function patchLibRs(targetDir, config) {
   // handler receives `{ id, payload }`. The built-in `Show` and `Quit`
   // items are always present.
   const background = !!config?.app?.background;
+  const trayWindow = config?.app?.visible === false ? "ide" : "main";
   const desktopChainWithBackground = background
     ? `${desktopChain ? desktopChain + "\n" : ""}        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -102,7 +103,7 @@ export async function patchLibRs(targetDir, config) {
                     match event.id.as_ref() {
                         "quit" => { app.exit(0); }
                         "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
+                            if let Some(window) = app.get_webview_window("${trayWindow}") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
@@ -119,7 +120,7 @@ export async function patchLibRs(targetDir, config) {
                                 "id": id,
                                 "payload": payload,
                             }));
-                            if let Some(window) = app.get_webview_window("main") {
+                            if let Some(window) = app.get_webview_window("${trayWindow}") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }

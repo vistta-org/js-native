@@ -252,6 +252,110 @@ vistta build [folder] android --target apk,aab
 vistta build [folder] app --target android=apk,windows=nsis
 ```
 
+## Run on startup (Windows/Linux) — plan
+
+**Status: planned, not implemented.** Adds an opt-in "launch at login" option
+for desktop apps. Scope is decided; implementation follows the outline below.
+
+### Decisions
+
+- **Windows + Linux only.** The upstream plugin supports macOS too, but per-OS
+  registration strategies (Launch Agent vs `Run` key vs XDG entry) make the v1
+  semantics non-uniform, so macOS is not offered. Android, iOS, and browser
+  builds never expose the option.
+- **Lives under `System`, not `Shell`.** Registering an autostart entry is OS
+  configuration, not process spawning. The intended API is
+  `System.enableAutostart()`, `System.disableAutostart()`,
+  `System.isAutostartEnabled()`.
+- **The OS is the source of truth.** Enabled state is read live from the
+  registration on every render and toggle; it is never persisted as a synced
+  user preference, so two devices of the same account can legitimately differ.
+- **Off by default.** The user opts in via an explicit toggle.
+- **Autostarted launches start hidden.** The runtime launches with a
+  `--autostart` marker argument and keeps the main window hidden when that
+  argument is present, so a login launch lands in the tray instead of stealing
+  focus. This pairs with background mode (`app.background: true`) — without it,
+  a hidden autostarted app would be unreachable. Apps should only surface the
+  toggle when background mode is available.
+
+### Runtime changes
+
+1. **Registry entry** — `autostart` in `plugins.config.js`:
+   `id: "autostart"`, `crate: "tauri-plugin-autostart"`, version `2`, and a
+   custom `initFn` registering the plugin with the `--autostart` argument
+   (fully qualified:
+   `tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"]))`,
+   so no generated `use` lines are needed). The plugin's `default` permission
+   already covers `enable` / `disable` / `is_enabled`, so no `permissions`
+   array is required.
+2. **Per-OS desktop gating** — the registry currently distinguishes only
+   desktop vs mobile, and `platforms: ["desktop"]` includes macOS. The registry
+   gains desktop sub-target tags (`"windows"`, `"linux"`, `"macos"`) honored by
+   `pluginsFor()` (which must also see the CLI platform, not only the resolved
+   `desktop` target), by `patchLibRs` / `patchCargoToml` (cfg
+   `not(any(target_os = "android", target_os = "ios", target_os = "macos"))` for
+   the crate dependency and plugin registration), and by `patchCapabilities`.
+   Existing desktop-only plugins keep their current behaviour.
+3. **Hidden-start logic** — `patchLibRs` emits a check of `std::env::args()`
+   for `--autostart` and keeps the window hidden at startup when it is present.
+   `tauri.conf.json` declares windows statically, so avoiding a first-frame
+   flash on autostarted launches means creating the window `visible: false` and
+   showing it in setup on every launch. That is the planned approach; the
+   tradeoff (normal launches appear a frame or two later) is accepted unless it
+   regresses perceived startup.
+4. **JS wrapper** — add `@tauri-apps/plugin-autostart` (npm `^2.7.0`) to the
+   package's dependencies and re-export its three functions in
+   `plugins/system.js` as named re-exports (`enableAutostart`,
+   `disableAutostart`, `isAutostartEnabled`) rather than a plain `export *`,
+   which would collapse bare `enable` / `disable` / `isEnabled` into the flat
+   `System` namespace. The `System` namespace in `plugins/index.js` picks them
+   up unchanged. The `system.js` header comment ("no plugin crates, no extra
+   capabilities") must be updated — this is the first plugin crate folded into
+   `System`.
+
+### Platform matrix
+
+| Platform    | Registration                                         | Autostart behaviour                               |
+| ----------- | ---------------------------------------------------- | ------------------------------------------------- |
+| Windows     | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Launches with `--autostart`; window starts hidden |
+| Linux       | XDG `.desktop` file in `~/.config/autostart/`        | Launches with `--autostart`; window starts hidden |
+| macOS       | — (not offered in v1)                                | —                                                 |
+| Android/iOS | — (plugin not registered)                            | —                                                 |
+| Browser     | — (not applicable)                                   | —                                                 |
+
+Linux note: when running as an AppImage, the plugin registers the AppImage file
+itself (resolved from the `APPIMAGE` environment variable, falling back to the
+current executable), so the entry keeps working across relocation; it does not
+point at the temporary mount point.
+
+Toolchain note: `tauri-plugin-autostart` 2.x requires Rust ≥ 1.90 — verify the
+host/build-container toolchain before landing.
+
+### App integration (Connect)
+
+- A "Run on startup" switch in System settings, shown only when
+  `window.platform === "desktop"` and the host OS is Windows/Linux (hidden on
+  macOS), and only when background mode is available.
+- Toggling calls `System.enableAutostart()` / `System.disableAutostart()`
+  through the system provider's action pattern; the switch state comes from
+  `isAutostartEnabled()` probed on mount and refreshed after each toggle.
+- Five-language labels (en/pt/es/fr/de) following the existing label set.
+
+### Acceptance
+
+- On Windows and Linux: enabling registers the OS entry; after a reboot the app
+  launches hidden with the tray present; disabling removes the entry; removing
+  the entry externally is reflected by `isAutostartEnabled()`.
+- macOS/Android/iOS builds compile without the crate, registration, or
+  capability permission present, and the switch is not rendered on those
+  targets.
+- Normal (non-`--autostart`) launches still bring the main window up
+  predictably (subject to the `visible: false` change above).
+- `buildDir/` regeneration stays clean — the feature is expressed entirely
+  through the registry and generators, with no hand-edited generated files.
+- Docs to update when it ships: the `System` section and plugin table in this
+  README, plus the Connect README's feature list.
+
 ## Native extension roadmap
 
 **Status: proposed, not implemented.** The goal is to let applications add

@@ -387,6 +387,7 @@ function assertTauriVersion() {
 
 function resolveIconPath(config) {
   if (!config?.icon || !config?.buildDir) return null;
+  if (fs.isAbsolute(config.icon)) return config.icon;
   return fs.resolve(config.buildDir, "www", String(config.icon).replace(/^\/+/, ""));
 }
 
