@@ -1040,10 +1040,11 @@ service's network stack is not bound to the activity lifecycle. When
 the bridge is absent (desktop, web, iOS, or before the activity injects
 the bridge), `fetch` falls through to the regular `window.fetch`.
 
-> **Note:** this applies to the `fetch` function imported from
-> `@vistta/js-native/plugins`, not to `window.fetch` globally. The
-> runtime does not monkey-patch `window.fetch`. To route `request` from
-> `@vistta/utils` through it, call `request.replaceFetch(Net.fetch)`.
+> **Note:** this does not monkey-patch `window.fetch`. When the bridge
+> is present, loading `@vistta/js-native/plugins` makes `Net.fetch` the
+> fetch used by `request` from `@vistta/utils`, and the `@vistta/js` SPA
+> client loads the plugins on mobile before the first route, so app
+> requests go through the service with no setup.
 
 The override is what makes background polling work: while the activity
 is paused, the WebView's own network stack stops completing responses,

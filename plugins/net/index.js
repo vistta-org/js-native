@@ -10,11 +10,19 @@
  * (string, `Blob`, `FormData`, buffers) is sent, and the response body
  * is streamed. URLs served by the WebView itself (same origin, `data:`,
  * `blob:`) always use `window.fetch`.
+ *
+ * When the bridge is present, loading this module also makes it the fetch
+ * used by `request` from `@vistta/utils`.
  */
+
+import { request } from "@vistta/utils";
 
 /** @type {Map<string, { resolve: (r: Response) => void, reject: (e: Error) => void, controller?: ReadableStreamDefaultController<Uint8Array> }>} */
 const pending = new Map();
 const NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
+// Unique per module copy, since every bundled copy receives every bridge event.
+const ID_PREFIX = `bf${Math.random().toString(36).slice(2, 8)}`;
+const INSTALLED = Symbol.for("Vistta.Native.Fetch");
 let fetchIdCounter = 0;
 let resultListenerInstalled = false;
 /** @type {false | Object} */
@@ -43,6 +51,11 @@ export function fetch(url, init) {
   return routeFetch(new Request(url, init));
 }
 
+if (getBridge() && !globalThis[INSTALLED]) {
+  globalThis[INSTALLED] = true;
+  request.replaceFetch(fetch);
+}
+
 function getBridge() {
   if (bridge) return bridge;
   if (typeof window === "undefined") return false;
@@ -61,7 +74,7 @@ async function routeFetch(req) {
   req.headers.forEach((value, key) => (headers[key] = value));
   const body = req.method === "GET" || req.method === "HEAD" ? null : bytesToBase64(new Uint8Array(await req.arrayBuffer()));
   if (req.signal.aborted) throw new DOMException("Aborted", "AbortError");
-  const id = `bf${(++fetchIdCounter).toString(36)}`;
+  const id = `${ID_PREFIX}${(++fetchIdCounter).toString(36)}`;
   installResultListener();
   return new Promise((resolve, reject) => {
     const entry = { resolve, reject, controller: undefined };
