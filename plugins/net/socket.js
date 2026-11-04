@@ -25,8 +25,10 @@
  * underlying socket fires its events.
  */
 
-/** @type {Map<string, Set<{ name: string, handler: (...args: any[]) => void }>>} */
+/** @type {Map<string, Set<{ name: string, handler: (...args: any[]) => void, mobile: { background: boolean } }>>} */
 const listeners = new Map();
+/** @type {Map<string, Map<string, number>>} id -> event name -> `mobile.background` listener count */
+const backgroundCounts = new Map();
 let connectIdCounter = 0;
 let eventListenerInstalled = false;
 /** @type {false | Object} */
@@ -82,6 +84,7 @@ export function connect(url, opts) {
  */
 export function disconnect(id) {
   if (id == null) return;
+  releaseAllBackground(id);
   const b = getBridge();
   if (b && typeof b.disconnect === "function") {
     b.disconnect(id);
@@ -179,19 +182,24 @@ export function emit(id, name, ...args) {
  * @param {string} name - Event name.
  * @param {(...args: any[]) => void} handler - Callback invoked with the
  *   deserialised arguments.
+ * @param {{ mobile?: { background?: boolean } }} [options] - `mobile.background`
+ *   keeps delivering the event while the mobile app is backgrounded (Android:
+ *   holds the foreground service while any such listener exists).
  * @returns {() => void} Unsubscribe function.
  */
-export function on(id, name, handler) {
+export function on(id, name, handler, { mobile: { background = false } = {} } = {}) {
   if (id == null || name == null || typeof handler !== "function") return () => {};
+  if (typeof background !== "boolean") throw new TypeError("mobile.background must be a boolean");
   installEventListener();
   let set = listeners.get(id);
   if (!set) {
     set = new Set();
     listeners.set(id, set);
   }
-  const entry = { name, handler };
+  const entry = { name, handler, mobile: { background } };
   set.add(entry);
-  return () => set.delete(entry);
+  if (background) retainBackground(id, name);
+  return () => removeEntry(id, set, entry);
 }
 
 /**
@@ -206,13 +214,54 @@ export function off(id, name, handler) {
   if (!set) return;
   for (const entry of set) {
     if (entry.name === name && entry.handler === handler) {
-      set.delete(entry);
+      removeEntry(id, set, entry);
       return;
     }
   }
 }
 
 // --- Internals ---
+
+function removeEntry(id, set, entry) {
+  if (!set.delete(entry)) return;
+  if (entry.mobile.background) releaseBackground(id, entry.name);
+}
+
+function retainBackground(id, name) {
+  let counts = backgroundCounts.get(id);
+  if (!counts) {
+    counts = new Map();
+    backgroundCounts.set(id, counts);
+  }
+  const count = (counts.get(name) || 0) + 1;
+  counts.set(name, count);
+  if (count === 1) setBackground(id, name, true);
+}
+
+function releaseBackground(id, name) {
+  const counts = backgroundCounts.get(id);
+  if (!counts) return;
+  const count = (counts.get(name) || 0) - 1;
+  if (count > 0) {
+    counts.set(name, count);
+    return;
+  }
+  counts.delete(name);
+  if (counts.size === 0) backgroundCounts.delete(id);
+  setBackground(id, name, false);
+}
+
+function releaseAllBackground(id) {
+  const counts = backgroundCounts.get(id);
+  if (!counts) return;
+  backgroundCounts.delete(id);
+  for (const name of counts.keys()) setBackground(id, name, false);
+}
+
+function setBackground(id, name, background) {
+  const b = getBridge();
+  if (b && typeof b.setBackground === "function") b.setBackground(id, name, background);
+}
 
 function getBridge() {
   if (bridge) return bridge;

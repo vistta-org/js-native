@@ -35,8 +35,8 @@ class VisttaService : Service() {
         private const val ACTION_REGISTER = "vistta.REGISTER_TIMER"
         private const val ACTION_CLEAR = "vistta.CLEAR_TIMER"
         private const val ACTION_STOP_IF_EMPTY = "vistta.STOP_IF_EMPTY"
-        private const val ACTION_SOCKET_OPENED = "vistta.SOCKET_OPENED"
-        private const val ACTION_SOCKET_CLOSED = "vistta.SOCKET_CLOSED"
+        private const val ACTION_BACKGROUND_EVENTS_ON = "vistta.BACKGROUND_EVENTS_ON"
+        private const val ACTION_BACKGROUND_EVENTS_OFF = "vistta.BACKGROUND_EVENTS_OFF"
         private const val ACTION_CLIPBOARD_START = "vistta.CLIPBOARD_START"
         private const val ACTION_CLIPBOARD_STOP = "vistta.CLIPBOARD_STOP"
         const val EXTRA_ID = "id"
@@ -48,12 +48,13 @@ class VisttaService : Service() {
         @Volatile
         private var instance: VisttaService? = null
 
-        // Number of currently-open background sockets. Used by the
-        // service's stopSelf check so the foreground service (and the
-        // specialUse priority it grants) stay alive as long as any socket
-        // is open, even when no timers are registered.
+        // True while any socket listener is registered with `mobile: { background: true }`.
         @Volatile
-        private var socketCount: Int = 0
+        private var backgroundEvents: Boolean = false
+
+        // The service could not start (app already backgrounded); retried on the next resume.
+        @Volatile
+        private var pendingStart: Boolean = false
 
         // Number of active clipboard poll loops. Keeps the foreground
         // service alive so the native poll (which reads the clipboard via
@@ -88,18 +89,31 @@ class VisttaService : Service() {
             context.startService(intent)
         }
 
-        fun socketOpened(context: Context) {
-            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_SOCKET_OPENED)
-            try {
-                context.startForegroundService(intent)
-            } catch (_: Throwable) {
-                // No permission / already running; best-effort.
+        fun setBackgroundEvents(context: Context, active: Boolean) {
+            if (active == backgroundEvents) return
+            backgroundEvents = active
+            if (active) {
+                startBackgroundEvents(context)
+            } else {
+                pendingStart = false
+                val intent = Intent(context, VisttaService::class.java).setAction(ACTION_BACKGROUND_EVENTS_OFF)
+                try { context.startService(intent) } catch (_: Throwable) {}
             }
         }
 
-        fun socketClosed(context: Context) {
-            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_SOCKET_CLOSED)
-            try { context.startService(intent) } catch (_: Throwable) {}
+        fun resumePendingStart(context: Context) {
+            if (pendingStart && backgroundEvents) startBackgroundEvents(context)
+        }
+
+        private fun startBackgroundEvents(context: Context) {
+            val intent = Intent(context, VisttaService::class.java).setAction(ACTION_BACKGROUND_EVENTS_ON)
+            pendingStart = try {
+                context.startForegroundService(intent)
+                false
+            } catch (_: Throwable) {
+                // Android 12+ forbids foreground-service starts from the background.
+                true
+            }
         }
 
         fun clipboardStart(context: Context) {
@@ -136,13 +150,13 @@ class VisttaService : Service() {
         // process was killed by the LMK. On Android 14+ we cannot call
         // startForeground() from a background restart — it throws
         // ForegroundServiceStartNotAllowedException. Keep the service
-        // alive (START_STICKY) but non-foreground; the socket's
-        // reconnection will re-promote it via socketOpened().
+        // alive (START_STICKY) but non-foreground; it is promoted again
+        // when JS registers timers or background listeners.
         if (intent == null) {
             return START_STICKY
         }
         // Only promote to foreground for actions started via
-        // startForegroundService() (REGISTER, SOCKET_OPENED). The other
+        // startForegroundService() (REGISTER, BACKGROUND_EVENTS_ON). The other
         // actions are started via startService() on an already-running
         // service and must not call startForeground() — doing so after
         // the OS has revoked foreground eligibility crashes the process.
@@ -156,29 +170,25 @@ class VisttaService : Service() {
             ACTION_CLEAR -> {
                 val id = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
                 cancelTimer(id)
-                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
+                stopIfIdle()
             }
-            ACTION_STOP_IF_EMPTY -> {
-                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
-            }
-            ACTION_SOCKET_OPENED -> {
-                startForegroundCompat()
-                socketCount++
-            }
-            ACTION_SOCKET_CLOSED -> {
-                if (socketCount > 0) socketCount--
-                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
-            }
+            ACTION_STOP_IF_EMPTY -> stopIfIdle()
+            ACTION_BACKGROUND_EVENTS_ON -> startForegroundCompat()
+            ACTION_BACKGROUND_EVENTS_OFF -> stopIfIdle()
             ACTION_CLIPBOARD_START -> {
                 startForegroundCompat()
                 clipboardCount++
             }
             ACTION_CLIPBOARD_STOP -> {
                 if (clipboardCount > 0) clipboardCount--
-                if (timers.isEmpty() && socketCount == 0 && clipboardCount == 0) stopSelf()
+                stopIfIdle()
             }
         }
         return START_STICKY
+    }
+
+    private fun stopIfIdle() {
+        if (timers.isEmpty() && !backgroundEvents && clipboardCount == 0) stopSelf()
     }
 
     private fun scheduleTimer(id: String, intervalMs: Long) {
@@ -232,7 +242,6 @@ class VisttaService : Service() {
         timers.clear()
         webViewRef = null
         instance = null
-        VisttaNetwork.shutdown()
         super.onDestroy()
     }
 }

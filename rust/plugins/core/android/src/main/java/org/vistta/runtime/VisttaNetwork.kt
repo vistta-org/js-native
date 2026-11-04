@@ -17,6 +17,8 @@
 package org.vistta.runtime
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -29,7 +31,7 @@ import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import okhttp3.Call
-import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -47,16 +49,19 @@ object VisttaNetwork {
     @Volatile
     private var appContext: WeakReference<Context>? = null
 
-    // Ref-counted wake lock: one PARTIAL_WAKE_LOCK is held while any
-    // socket is open. Without it, Android pauses the network after a
-    // few minutes of background time even with a foreground service.
-    private val wakeLockLock = Any()
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wakeLockRefCount: Int = 0
+    @Volatile
+    private var eventWakeLock: PowerManager.WakeLock? = null
 
+    @Volatile
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var defaultNetwork: Network? = null
+
+    // No read timeout, matching WebView fetch: responses such as AI generation can take minutes.
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
         .pingInterval(20, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
@@ -65,6 +70,15 @@ object VisttaNetwork {
 
     private val inFlightFetches = ConcurrentHashMap<String, Call>()
     private val sockets = ConcurrentHashMap<String, Socket>()
+
+    // Socket id -> event names registered with `mobile: { background: true }`.
+    private val backgroundEvents = ConcurrentHashMap<String, MutableSet<String>>()
+
+    // Sockets that dropped events while backgrounded; they resync on resume.
+    private val droppedWhileBackground = ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile
+    private var inBackground = false
 
     fun attachWebView(webView: WebView) {
         webViewRef = WeakReference(webView)
@@ -96,6 +110,8 @@ object VisttaNetwork {
         inFlightFetches.remove(id)?.cancel()
     }
 
+    private const val FETCH_CHUNK_SIZE = 64 * 1024
+
     private fun executeFetch(
         id: String,
         urlStr: String,
@@ -103,10 +119,11 @@ object VisttaNetwork {
         headersJson: String,
         bodyBase64: String?,
     ) {
+        var headSent = false
         try {
             val requestBody: RequestBody? = if (bodyBase64 != null) {
                 val bytes = Base64.decode(bodyBase64, Base64.DEFAULT)
-                val mediaType = "application/octet-stream".toMediaType()
+                val mediaType = headerValue(headersJson, "content-type")?.toMediaTypeOrNull()
                 bytes.toRequestBody(mediaType, 0, bytes.size)
             } else null
 
@@ -123,32 +140,41 @@ object VisttaNetwork {
 
             val call = client.newCall(builder.build())
             inFlightFetches[id] = call
-            val response = call.execute()
-            val responseBody = response.body
-            val bytes = responseBody?.bytes() ?: ByteArray(0)
-            val bodyB64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            val headerLines = response.headers.toMultimap().flatMap { (k, v) ->
-                v.map { k + "\t" + it }
-            }.joinToString("\n")
-            deliverFetchResult(
-                id = id,
-                ok = true,
-                status = response.code,
-                headers = headerLines,
-                bodyBase64 = bodyB64,
-                error = "",
-            )
+            call.execute().use { response ->
+                val headerLines = response.headers.toMultimap().flatMap { (k, v) ->
+                    v.map { k + "\t" + it }
+                }.joinToString("\n")
+                dispatchFetchEvent("background-fetch-head", id, ",status:" + response.code + ",headers:" + jsString(headerLines))
+                headSent = true
+                response.body?.byteStream()?.use { input ->
+                    val buffer = ByteArray(FETCH_CHUNK_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (read > 0) {
+                            val data = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP)
+                            dispatchFetchEvent("background-fetch-chunk", id, ",data:" + jsString(data))
+                        }
+                    }
+                }
+                dispatchFetchEvent("background-fetch-end", id, "")
+            }
         } catch (e: Throwable) {
-            deliverFetchResult(
-                id = id,
-                ok = false,
-                status = 0,
-                headers = "",
-                bodyBase64 = "",
-                error = (e.message ?: e.javaClass.simpleName),
-            )
+            val error = jsString(e.message ?: e.javaClass.simpleName)
+            if (headSent) dispatchFetchEvent("background-fetch-end", id, ",error:" + error)
+            else dispatchFetchEvent("background-fetch-result", id, ",error:" + error)
         } finally {
             inFlightFetches.remove(id)
+        }
+    }
+
+    private fun headerValue(headersJson: String, name: String): String? {
+        if (headersJson.isEmpty()) return null
+        return try {
+            val obj = JSONObject(headersJson)
+            obj.keys().asSequence().firstOrNull { it.equals(name, ignoreCase = true) }?.let { obj.getString(it) }
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -166,22 +192,10 @@ object VisttaNetwork {
         } catch (_: Throwable) {}
     }
 
-    private fun deliverFetchResult(
-        id: String,
-        ok: Boolean,
-        status: Int,
-        headers: String,
-        bodyBase64: String,
-        error: String,
-    ) {
+    private fun dispatchFetchEvent(name: String, id: String, fields: String) {
         val webView = webViewRef?.get() ?: return
-        val js = "(function(){try{window.dispatchEvent(new CustomEvent('background-fetch-result',{detail:{id:" + jsString(id) +
-            ",ok:" + (if (ok) "true" else "false") +
-            ",status:" + status +
-            ",headers:" + jsString(headers) +
-            ",bodyBase64:" + jsString(bodyBase64) +
-            ",error:" + jsString(error) +
-            "}}))}catch(e){}})()"
+        val js = "(function(){try{window.dispatchEvent(new CustomEvent('" + name + "',{detail:{id:" + jsString(id) +
+            fields + "}}))}catch(e){}})()"
         mainHandler.post { webView.evaluateJavascript(js, null) }
     }
 
@@ -195,7 +209,7 @@ object VisttaNetwork {
                     opts.javaClass.getField("reconnection").setBoolean(opts, true)
                     opts.javaClass.getField("reconnectionAttempts").setInt(opts, Int.MAX_VALUE)
                     opts.javaClass.getField("reconnectionDelay").setLong(opts, 1000L)
-                    opts.javaClass.getField("reconnectionDelayMax").setLong(opts, 5000L)
+                    opts.javaClass.getField("reconnectionDelayMax").setLong(opts, 300_000L)
                     opts.javaClass.getField("timeout").setLong(opts, 20_000L)
                     // Force WebSocket-only transport. The polling fallback
                     // creates new HTTP requests that Android aggressively
@@ -232,8 +246,7 @@ object VisttaNetwork {
                 }
                 val socket = IO.socket(URI.create(url), opts)
                 sockets[id] = socket
-                acquireWakeLock()
-                appContext?.get()?.let { VisttaService.socketOpened(it) }
+                watchNetwork()
                 socket.on(Socket.EVENT_CONNECT) { dispatchSocketEvent(id, "connect", emptyArray()) }
                 socket.on(Socket.EVENT_DISCONNECT) { args ->
                     dispatchSocketEvent(id, "disconnect", arrayOf(args.firstOrNull()?.toString() ?: ""))
@@ -249,21 +262,51 @@ object VisttaNetwork {
                 }
                 socket.connect()
             } catch (e: Throwable) {
-                if (sockets.remove(id) != null) {
-                    releaseWakeLock()
-                    try { appContext?.get()?.let { VisttaService.socketClosed(it) } } catch (_: Throwable) {}
-                }
+                sockets.remove(id)
                 dispatchSocketEvent(id, "connect_error", arrayOf(e.message ?: e.javaClass.simpleName))
             }
         }
     }
 
     fun disconnectSocket(id: String) {
+        droppedWhileBackground.remove(id)
         val s = sockets.remove(id) ?: return
         try { s.disconnect() } catch (_: Throwable) {}
         try { s.close() } catch (_: Throwable) {}
-        releaseWakeLock()
-        appContext?.get()?.let { VisttaService.socketClosed(it) }
+    }
+
+    fun setBackground(id: String, name: String, background: Boolean) {
+        synchronized(backgroundEvents) {
+            if (background) {
+                backgroundEvents.getOrPut(id) { ConcurrentHashMap.newKeySet() }.add(name)
+            } else {
+                val names = backgroundEvents[id] ?: return
+                names.remove(name)
+                if (names.isEmpty()) backgroundEvents.remove(id)
+            }
+            appContext?.get()?.let { VisttaService.setBackgroundEvents(it, backgroundEvents.isNotEmpty()) }
+        }
+    }
+
+    fun onAppBackground() {
+        inBackground = true
+    }
+
+    fun onAppForeground() {
+        inBackground = false
+        appContext?.get()?.let { VisttaService.resumePendingStart(it) }
+        for (id in droppedWhileBackground.toList()) {
+            droppedWhileBackground.remove(id)
+            val s = sockets[id] ?: continue
+            // Reported first so JS sees a drop even if the socket is not connected right now.
+            dispatchSocketEvent(id, "disconnect", arrayOf("background"))
+            executor.execute {
+                try {
+                    s.disconnect()
+                    s.connect()
+                } catch (_: Throwable) {}
+            }
+        }
     }
 
     fun emitSocket(id: String, name: String, argsJson: String) {
@@ -286,6 +329,11 @@ object VisttaNetwork {
     }
 
     private fun dispatchSocketEvent(id: String, name: String, args: Array<Any?>) {
+        if (inBackground && backgroundEvents[id]?.contains(name) != true) {
+            droppedWhileBackground.add(id)
+            return
+        }
+        holdBriefly()
         val webView = webViewRef?.get() ?: return
         val argsJson = JSONArray().apply {
             for (a in args) put(a ?: JSONObject.NULL)
@@ -297,76 +345,48 @@ object VisttaNetwork {
         mainHandler.post { webView.evaluateJavascript(js, null) }
     }
 
-    fun shutdown() {
-        for ((_, s) in sockets) {
-            try { s.disconnect() } catch (_: Throwable) {}
-            try { s.close() } catch (_: Throwable) {}
+    private const val EVENT_WAKE_LOCK_MS = 10_000L
+
+    // Short timed lock so an incoming event is delivered before the device sleeps again.
+    private fun holdBriefly() {
+        val lock = eventWakeLock ?: run {
+            val pm = appContext?.get()?.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vistta:network")
+                .apply { setReferenceCounted(false) }
+                .also { eventWakeLock = it }
         }
-        sockets.clear()
-        for ((_, c) in inFlightFetches) {
-            try { c.cancel() } catch (_: Throwable) {}
-        }
-        inFlightFetches.clear()
-        releaseWakeLock(force = true)
-        webViewRef = null
+        try { lock.acquire(EVENT_WAKE_LOCK_MS) } catch (_: Throwable) {}
     }
 
-    // Ref-counted wake lock helpers.
-    // Re-armed every 30 minutes so the PARTIAL_WAKE_LOCK never expires
-    // while a socket is open (acquire(1h) + re-arm before expiry).
-    private const val WAKE_LOCK_REARM_MS = 30 * 60 * 1000L
+    // Disconnects while offline (no retries) and reconnects with a reset backoff when a new default network appears.
+    private fun watchNetwork() {
+        if (networkCallback != null) return
+        val cm = appContext?.get()?.getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (network == defaultNetwork) return
+                defaultNetwork = network
+                for (s in sockets.values) {
+                    try {
+                        s.disconnect()
+                        s.connect()
+                    } catch (_: Throwable) {}
+                }
+            }
 
-    private val wakeLockRearmRunnable = object : Runnable {
-        override fun run() {
-            synchronized(wakeLockLock) {
-                val lock = wakeLock
-                if (lock != null && lock.isHeld && wakeLockRefCount > 0) {
-                    lock.acquire(60 * 60 * 1000L) // re-arm for another hour
-                    mainHandler.postDelayed(this, WAKE_LOCK_REARM_MS)
+            override fun onLost(network: Network) {
+                if (network != defaultNetwork) return
+                defaultNetwork = null
+                for (s in sockets.values) {
+                    try { s.disconnect() } catch (_: Throwable) {}
                 }
             }
         }
-    }
-
-    private fun acquireWakeLock() {
-        val ctx = appContext?.get() ?: return
-        synchronized(wakeLockLock) {
-            wakeLockRefCount++
-            val current = wakeLock
-            if (current != null && current.isHeld) {
-                mainHandler.removeCallbacks(wakeLockRearmRunnable)
-                mainHandler.postDelayed(wakeLockRearmRunnable, WAKE_LOCK_REARM_MS)
-                return
-            }
-            val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: run {
-                wakeLockRefCount--
-                return
-            }
-            val lock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "vistta:network",
-            ).apply {
-                setReferenceCounted(false)
-            }
-            try {
-                lock.acquire(60 * 60 * 1000L) // 1 hour ceiling
-                wakeLock = lock
-                mainHandler.postDelayed(wakeLockRearmRunnable, WAKE_LOCK_REARM_MS)
-            } catch (_: Throwable) {
-                wakeLockRefCount--
-            }
-        }
-    }
-
-    private fun releaseWakeLock(force: Boolean = false) {
-        synchronized(wakeLockLock) {
-            if (force) wakeLockRefCount = 0 else if (wakeLockRefCount > 0) wakeLockRefCount--
-            if (wakeLockRefCount > 0) return
-            mainHandler.removeCallbacks(wakeLockRearmRunnable)
-            val lock = wakeLock ?: return
-            try { if (lock.isHeld) lock.release() } catch (_: Throwable) {}
-            wakeLock = null
-        }
+        try {
+            defaultNetwork = cm.activeNetwork
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (_: Throwable) {}
     }
 
     private fun jsString(s: String): String {

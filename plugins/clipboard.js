@@ -26,7 +26,6 @@ import {
   startMonitor,
   stopMonitor,
 } from "./privileged-clipboard.js";
-import { clearBackgroundInterval, setBackgroundInterval } from "./scheduler.js";
 
 // Re-export the Tauri clipboard-manager commands as named exports so they
 // flatten into the `Clipboard` namespace via `export * as Clipboard` in
@@ -93,8 +92,7 @@ export function syncClipboard() {
  * Watches the system clipboard and invokes `onClip` whenever the content
  * changes. On Android with authorized Shizuku or Sui, the callback fires from
  * a native shell/root monitor.
- * Otherwise it polls `readText()` on a background interval and dedups by
- * content.
+ * Otherwise it polls `readText()` on an interval and dedups by content.
  *
  * @param {(text: string) => void} onClip - Called with the new clipboard text.
  * @param {number} [pollIntervalMs=2000] - Poll interval for the fallback path.
@@ -110,7 +108,7 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
   };
   window.addEventListener("background-clipboard", listener);
   backendListener = () => {
-    if (watcher && watcher !== "shizuku") clearBackgroundInterval(watcher);
+    if (watcher && watcher !== "shizuku") clearInterval(watcher);
     watcher = "shizuku";
   };
   window.addEventListener("privileged-clipboard-ready", backendListener);
@@ -128,10 +126,10 @@ export function watchBackground(onClip, pollIntervalMs = 2000) {
   }
 
   // Fallback: poll readText(). Works in the background on desktop; on
-  // Android without Shizuku it only delivers while the app is
-  // foregrounded (the OS blocks background reads).
+  // Android without Shizuku the OS blocks background reads, so a plain
+  // interval avoids keeping the foreground service alive for nothing.
   lastHash = null;
-  const id = setBackgroundInterval(async () => {
+  const id = setInterval(async () => {
     let text;
     try {
       text = await readText();
@@ -169,9 +167,9 @@ export function stopBackground() {
       /* ignore */
     }
   } else if (watcher) {
-    clearBackgroundInterval(watcher);
+    clearInterval(watcher);
   }
-  if (watcher && watcher !== "shizuku") clearBackgroundInterval(watcher);
+  if (watcher && watcher !== "shizuku") clearInterval(watcher);
   watcher = null;
   lastHash = null;
 }

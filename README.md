@@ -448,17 +448,28 @@ background scheduler (see [Scheduler](#scheduler) below).
 - `tauri-plugin-vistta` (at `rust/plugin/`) — the runtime's own Tauri plugin crate.
   On Android it registers a Kotlin `VisttaPlugin` class that owns:
   - `VisttaService` — the foreground service that holds the process + webview
-    alive while a scheduler timer is active or a background socket is open.
+    alive while a scheduler timer is active or a socket listener is registered
+    with `mobile: { background: true }`. An open socket alone no longer starts it.
     Uses `foregroundServiceType="specialUse"` (Android 14+) so it is not
     subject to the `dataSync` time budget that kills long-running services.
     The service only calls `startForeground()` for actions started via
-    `startForegroundService()` (`REGISTER`, `SOCKET_OPENED`); other actions
-    (`CLEAR`, `STOP_IF_EMPTY`, `SOCKET_CLOSED`) are sent via `startService()`
-    on an already-running service. A null-intent system restart stops the
-    service immediately to avoid a `ForegroundServiceStartNotAllowedException`
-    crash loop.
+    `startForegroundService()` (`REGISTER`, `BACKGROUND_EVENTS_ON`); other actions
+    (`CLEAR`, `STOP_IF_EMPTY`, `BACKGROUND_EVENTS_OFF`) are sent via `startService()`
+    on an already-running service. If the first background listener registers
+    while the app is already backgrounded (Android 12+ forbids the start),
+    the service starts on the next resume. A null-intent system restart
+    keeps the service non-foreground to avoid a
+    `ForegroundServiceStartNotAllowedException` crash loop.
   - `VisttaNetwork` — the OkHttp client and Socket.IO Java client used for
-    background fetch and background sockets.
+    background fetch and background sockets. Sockets hold no permanent wake
+    lock (only a 10 s lock per delivered event), back off reconnects up to
+    5 minutes, disconnect while the device has no network, and reconnect
+    immediately when a new default network appears. While the app is
+    backgrounded (activity stopped), only events with a
+    `mobile: { background: true }` listener reach the webview; the rest are
+    dropped natively. On resume, a
+    socket that dropped events reports `disconnect` and reconnects, so the
+    app's normal reconnect handling resyncs.
   - `VisttaClipboard` — standard foreground clipboard operations and manual
     sync. Android limits normal clipboard reads to the focused app.
   - `VisttaScheduler` / `VisttaFetch` / `VisttaSocket` /
@@ -548,6 +559,9 @@ background scheduler (see [Scheduler](#scheduler) below).
   The tray menu is dynamic: JS publishes quick-actions via `Accessibility.setShortcuts`
   (see [Accessibility](#accessibility)) and clicks emit `launch-action` events back to
   the webview. Has no effect on Android/iOS.
+- Desktop apps run as a single instance (`tauri-plugin-single-instance`): a second
+  launch shows the existing window (`main`, or `ide` when `app.visible: false`) and
+  exits. Set `app.multipleInstances: true` to allow several instances.
 
 **What's gone:**
 
@@ -1028,29 +1042,37 @@ the bridge), `fetch` falls through to the regular `window.fetch`.
 
 > **Note:** this applies to the `fetch` function imported from
 > `@vistta/js-native/plugins`, not to `window.fetch` globally. The
-> runtime does not monkey-patch `window.fetch`.
+> runtime does not monkey-patch `window.fetch`. To route `request` from
+> `@vistta/utils` through it, call `request.replaceFetch(Net.fetch)`.
 
 The override is what makes background polling work: while the activity
 is paused, the WebView's own network stack stops completing responses,
 so a `fetch` started from JS would hang. The service has its own
 network stack that is not bound to the activity lifecycle.
 
-The override is transparent to consumers — code that does
-`fetch(url)` or `request.get(...)` inside a tick callback Just Works on
-Android. Limitations to be aware of:
+Limitations to be aware of:
 
-- **Request bodies**: `string`, `ArrayBuffer`, and typed arrays are
-  supported. `Blob` and `FormData` are rejected (the bridge has no
-  streaming-read path for them).
-- **Streaming responses**: not supported. The service buffers the full
-  response before delivering. Use non-streaming fetches.
-- **Cancellation**: `AbortSignal` is honored. Aborting the signal calls
-  `VisttaNetwork.abortFetch(id)` and rejects the promise with
-  `DOMException("Aborted", "AbortError")`.
-- **Auth / CORS**: not affected. The service performs a plain HTTP
-  request via OkHttp, so CORS does not apply (this is the OS's HTTP
-  client, not a browser fetch). Auth headers from the original request
-  are forwarded.
+- **Request bodies**: anything `fetch` accepts (`string`, `Blob`,
+  `FormData`, `ArrayBuffer`, typed arrays, `URLSearchParams`) is
+  normalised through `Request`, read fully, and sent with its
+  `Content-Type` (including the multipart boundary). `ReadableStream`
+  bodies are not supported.
+- **Responses**: the head resolves the promise, then the body is
+  streamed to a `ReadableStream` in 64 KiB chunks, so progress and
+  `stream: true` reads work. Each chunk crosses the bridge as base64.
+- **Local URLs**: same-origin (the bundled shell), `data:`, and `blob:`
+  URLs always use `window.fetch`.
+- **Timeouts**: none on reads, matching `window.fetch`; connecting
+  times out after 15 seconds.
+- **Cancellation**: `AbortSignal` is honored, and cancelling the
+  response body aborts the native call. Aborting calls
+  `VisttaNetwork.abortFetch(id)` and rejects with
+  `DOMException("Aborted", "AbortError")`. Network failures reject with
+  a `TypeError`, like `window.fetch`.
+- **Cookies / CORS**: the service performs a plain HTTP request via
+  OkHttp, so CORS does not apply and no cookie jar is kept; send auth
+  as headers. Headers from the original request are forwarded, except
+  ones `Request` forbids (such as `Cookie` and `Sec-*`).
 
 ## Clipboard
 
@@ -1073,8 +1095,8 @@ the focused app or the default IME. A foreground service and an
 callback. On Android, the dedicated privileged clipboard plugin automatically
 uses Shizuku or Sui when it is running and Vistta is already authorized. On
 desktop, iOS, or standard Android, it falls back to polling `readText()` on a
-`setBackgroundInterval` (which only delivers while the app is foregrounded on
-Android 10+).
+plain `setInterval`. On Android 10+ this only delivers while the app is
+foregrounded, so it does not start the background service.
 
 ```javascript
 import { Clipboard } from "@vistta/js-native/plugins";

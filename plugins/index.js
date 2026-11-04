@@ -1,10 +1,12 @@
 export * as Dialog from "@tauri-apps/plugin-dialog";
+export * as BarcodeScanner from "@tauri-apps/plugin-barcode-scanner";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
 export * as Accessibility from "./accessibility.js";
 export * as Clipboard from "./clipboard.js";
 export * as Filesystem from "./filesystem/index.js";
 export * as Net from "./net/index.js";
+export * as Pinned from "./pinned.js";
 export * as PrivilegedClipboard from "./privileged-clipboard.js";
 export * as Recorder from "./recorder.js";
 export * as Scheduler from "./scheduler.js";

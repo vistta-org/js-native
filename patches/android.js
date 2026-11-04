@@ -324,7 +324,8 @@ export async function patchAppGradleSigning(targetDir, config) {
         keyPassword,
         "-dname",
         "CN=Vistta, OU=Vistta, O=Vistta, L=Unknown, ST=Unknown, C=Unknown",
-      ]).end();
+        // keytool is a real executable; a Windows shell would split the -dname value at its spaces.
+      ], { shell: false }).end();
     } else if (fs.existsSync(propsPath)) {
       // Load existing password from the properties file.
       const props = String(await fs.readFile(propsPath, "utf8"));

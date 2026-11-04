@@ -122,6 +122,13 @@ export const PLUGINS = [
     ],
   },
   {
+    id: "barcode-scanner",
+    crate: "tauri-plugin-barcode-scanner",
+    version: "2",
+    platforms: ["android", "ios"],
+    permissions: [],
+  },
+  {
     id: "notification",
     crate: "tauri-plugin-notification",
     version: "2",

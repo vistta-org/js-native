@@ -20,6 +20,8 @@
 //   VisttaVad       — parallel AudioRecord RMS tap feeding live loudness to
 //                     JS for silence-aware recording auto-stop (see
 //                     VisttaVad).
+//   VisttaPinned    — HTTPS and a full-screen WebView trusting only a
+//                     pinned per-server CA (see VisttaPinned).
 //
 // Microphone recording goes through tauri-plugin-audio-recorder; screen
 // recording is owned by VisttaScreenRecorder (registered as Tauri commands
@@ -43,6 +45,7 @@ import android.os.Looper
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.appcompat.app.AppCompatActivity
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Plugin
 
@@ -66,6 +69,9 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         VisttaShortcuts.attachWebView(webView)
         VisttaAutofill.attach(webView, activity)
         VisttaShortcuts.flushPending()
+        VisttaPinned.attachWebView(webView)
+        VisttaPinned.attachActivity(activity)
+        webView.addJavascriptInterface(visttaPinnedBridge, "VisttaPinned")
         webView.addJavascriptInterface(visttaSchedulerBridge, "VisttaScheduler")
         webView.addJavascriptInterface(visttaFetchBridge, "VisttaFetch")
         webView.addJavascriptInterface(visttaSocketBridge, "VisttaSocket")
@@ -75,6 +81,14 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         webView.addJavascriptInterface(VisttaShortcuts, "VisttaShortcuts")
         webView.addJavascriptInterface(VisttaAutofill, "VisttaAutofill")
         webView.addJavascriptInterface(VisttaVad, "VisttaVad")
+    }
+
+    override fun onStop(activity: AppCompatActivity) {
+        VisttaNetwork.onAppBackground()
+    }
+
+    override fun onResume(activity: AppCompatActivity) {
+        VisttaNetwork.onAppForeground()
     }
 
     private fun ensureDefaultNotificationChannel() {
@@ -117,6 +131,23 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    private val visttaPinnedBridge = object {
+        @JavascriptInterface
+        fun fetchCertificate(id: String, url: String) {
+            VisttaPinned.fetchCertificate(id, url)
+        }
+
+        @JavascriptInterface
+        fun request(id: String, url: String, method: String, headersJson: String, body: String?, caPem: String) {
+            VisttaPinned.request(id, url, method, headersJson, body, caPem)
+        }
+
+        @JavascriptInterface
+        fun openWeb(url: String, caPem: String, title: String) {
+            VisttaPinned.openWeb(url, caPem, title)
+        }
+    }
+
     private val visttaSocketBridge = object {
         @JavascriptInterface
         fun connect(id: String, url: String, optsJson: String) {
@@ -131,6 +162,11 @@ class VisttaPlugin(private val activity: Activity) : Plugin(activity) {
         @JavascriptInterface
         fun emit(id: String, name: String, argsJson: String) {
             VisttaNetwork.emitSocket(id, name, argsJson)
+        }
+
+        @JavascriptInterface
+        fun setBackground(id: String, name: String, background: Boolean) {
+            VisttaNetwork.setBackground(id, name, background)
         }
     }
 

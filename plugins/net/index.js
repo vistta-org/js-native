@@ -6,13 +6,15 @@
  * `VisttaFetch` bridge is absent), `fetch()` falls through to the regular
  * `window.fetch` so callers don't need to branch on environment.
  *
- * Unlike `window.fetch`, this API accepts only string URLs and plain
- * objects for headers/body. Request bodies that are not already strings
- * must be serialised before being passed in.
+ * Requests are normalised through `Request`, so any body `fetch` accepts
+ * (string, `Blob`, `FormData`, buffers) is sent, and the response body
+ * is streamed. URLs served by the WebView itself (same origin, `data:`,
+ * `blob:`) always use `window.fetch`.
  */
 
-/** @type {Map<string, { resolve: (r: Response) => void, reject: (e: Error) => void }>} */
+/** @type {Map<string, { resolve: (r: Response) => void, reject: (e: Error) => void, controller?: ReadableStreamDefaultController<Uint8Array> }>} */
 const pending = new Map();
+const NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 let fetchIdCounter = 0;
 let resultListenerInstalled = false;
 /** @type {false | Object} */
@@ -28,14 +30,17 @@ export * as Socket from "./socket.js";
  * is paused. On other platforms (or when the bridge is unavailable), this
  * delegates to `window.fetch`.
  *
- * @param {string} url - The URL to fetch.
+ * @param {RequestInfo | URL} url - The URL or Request to fetch.
  * @param {RequestInit} [init] - Standard fetch options.
  * @returns {Promise<Response>} A standard Response.
  */
 export function fetch(url, init) {
   const b = getBridge();
   if (!b || typeof b.fetchUrl !== "function") return globalThis.fetch(url, init);
-  return routeFetch(url, init || {});
+  const target = new URL(url instanceof Request ? url.url : String(url), location.href);
+  if (target.origin === location.origin || (target.protocol !== "http:" && target.protocol !== "https:"))
+    return globalThis.fetch(url, init);
+  return routeFetch(new Request(url, init));
 }
 
 function getBridge() {
@@ -49,44 +54,19 @@ function getBridge() {
   return false;
 }
 
-function routeFetch(url, init) {
+/** @param {Request} req */
+async function routeFetch(req) {
   const b = getBridge();
-  if (!b || typeof b.fetchUrl !== "function") {
-    return globalThis.fetch(url, init);
-  }
-
-  const method = String(init.method || "GET").toUpperCase();
-  const headersObj = /** @type {Record<string, string>} */ ({});
-  if (init.headers) {
-    if (init.headers instanceof Headers) {
-      init.headers.forEach((value, key) => {
-        headersObj[key] = String(value);
-      });
-    } else if (Array.isArray(init.headers)) {
-      for (const pair of init.headers) {
-        const [k, v] = /** @type {[string, string]} */ (pair);
-        headersObj[k] = String(v);
-      }
-    } else if (typeof init.headers === "object") {
-      for (const k of Object.keys(init.headers)) {
-        headersObj[k] = String(/** @type {Record<string, string>} */ (init.headers)[k]);
-      }
-    }
-  }
-
-  const body = init.body != null ? String(init.body) : null;
+  const headers = /** @type {Record<string, string>} */ ({});
+  req.headers.forEach((value, key) => (headers[key] = value));
+  const body = req.method === "GET" || req.method === "HEAD" ? null : bytesToBase64(new Uint8Array(await req.arrayBuffer()));
+  if (req.signal.aborted) throw new DOMException("Aborted", "AbortError");
   const id = `bf${(++fetchIdCounter).toString(36)}`;
-
-  const promise = new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-  });
-
-  if (init.signal) {
-    if (init.signal.aborted) {
-      pending.delete(id);
-      return Promise.reject(new DOMException("Aborted", "AbortError"));
-    }
-    init.signal.addEventListener(
+  installResultListener();
+  return new Promise((resolve, reject) => {
+    const entry = { resolve, reject, controller: undefined };
+    pending.set(id, entry);
+    req.signal.addEventListener(
       "abort",
       () => {
         try {
@@ -94,39 +74,38 @@ function routeFetch(url, init) {
         } catch {
           /* ignore */
         }
-        const entry = pending.get(id);
-        if (entry) {
-          pending.delete(id);
-          entry.reject(new DOMException("Aborted", "AbortError"));
-        }
+        if (!pending.delete(id)) return;
+        const error = new DOMException("Aborted", "AbortError");
+        if (entry.controller) entry.controller.error(error);
+        else reject(error);
       },
       { once: true },
     );
-  }
-
-  installResultListener();
-  try {
-    b.fetchUrl(id, url, method, JSON.stringify(headersObj), body);
-  } catch (e) {
-    pending.delete(id);
-    return Promise.reject(e);
-  }
-  return promise;
+    try {
+      b.fetchUrl(id, req.url, req.method, JSON.stringify(headers), body);
+    } catch (e) {
+      pending.delete(id);
+      reject(e);
+    }
+  });
 }
 
 function installResultListener() {
   if (resultListenerInstalled || typeof window === "undefined") return;
   resultListenerInstalled = true;
+  const detail = (event) => /** @type {CustomEvent} */ (event)?.detail || {};
+  // Failure before any response arrived; rejects like `window.fetch` on a network error.
   window.addEventListener("background-fetch-result", (event) => {
-    const d = /** @type {CustomEvent} */ (event)?.detail;
-    if (!d || !d.id) return;
+    const d = detail(event);
     const entry = pending.get(d.id);
     if (!entry) return;
     pending.delete(d.id);
-    if (!d.ok) {
-      entry.reject(new Error(d.error || "Background fetch failed"));
-      return;
-    }
+    entry.reject(new TypeError(d.error || "Background fetch failed"));
+  });
+  window.addEventListener("background-fetch-head", (event) => {
+    const d = detail(event);
+    const entry = pending.get(d.id);
+    if (!entry) return;
     const headers = new Headers();
     if (typeof d.headers === "string" && d.headers.length) {
       for (const line of d.headers.split("\n")) {
@@ -137,13 +116,35 @@ function installResultListener() {
         if (name) headers.append(name, value);
       }
     }
-    const bytes = d.bodyBase64 ? base64ToBytes(d.bodyBase64) : new Uint8Array();
-    const response = new Response(new Blob([bytes]), {
-      status: d.status || 200,
-      statusText: STATUS_TEXT[d.status] || "",
-      headers,
-    });
-    entry.resolve(response);
+    const nullBody = NULL_BODY_STATUS.has(d.status);
+    if (nullBody) pending.delete(d.id);
+    try {
+      const body = nullBody
+        ? null
+        : new ReadableStream({
+            start: (controller) => (entry.controller = controller),
+            cancel: () => {
+              pending.delete(d.id);
+              getBridge()?.abortFetch?.(d.id);
+            },
+          });
+      entry.resolve(new Response(body, { status: d.status, statusText: STATUS_TEXT[d.status] || "", headers }));
+    } catch (error) {
+      pending.delete(d.id);
+      entry.reject(error);
+    }
+  });
+  window.addEventListener("background-fetch-chunk", (event) => {
+    const d = detail(event);
+    pending.get(d.id)?.controller?.enqueue(base64ToBytes(d.data));
+  });
+  window.addEventListener("background-fetch-end", (event) => {
+    const d = detail(event);
+    const entry = pending.get(d.id);
+    if (!entry) return;
+    pending.delete(d.id);
+    if (d.error) entry.controller?.error(new TypeError(d.error));
+    else entry.controller?.close();
   });
 }
 
@@ -174,6 +175,13 @@ const STATUS_TEXT = {
   503: "Service Unavailable",
   504: "Gateway Timeout",
 };
+
+/** @param {Uint8Array} bytes */
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
 
 /** @param {string} b64 */
 function base64ToBytes(b64) {
