@@ -19,6 +19,7 @@ import {
   platform,
   resolveAppId,
   resolveApplicationId,
+  resolveIconPath,
   resolvePlatform,
   resolveTargets,
 } from "./utils/index.js";
@@ -48,7 +49,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {boolean} [app.autofill] - Android only. Registers the API 26+ Vistta Autofill service when true. The application must provide a Vault handler; disabled by default.
  * @property {string} [app.version] - App version (forwarded to bundle versioning; used to disambiguate desktop installers).
  * @property {string} [title] - Window title.
- * @property {string} [icon] - Icon path (relative to buildDir/www).
+ * @property {string} [icon] - Icon path (relative to buildDir/www, a web-root asset URL, or an absolute filesystem path).
  * @property {string} [backgroundColor] - Window background color (hex).
  * @property {{csp?: string|null}} [security]
  * @property {Object} [extraTauriConfig] - Deep-merged into the generated tauri.conf.json.
@@ -191,7 +192,7 @@ export async function build(config) {
       await patchMainActivity(cwd, config);
       await patchAndroidStrings(cwd, config);
       await patchAppGradleSigning(cwd, config);
-      if (iconPath && fs.existsSync(iconPath))
+      if (iconPath)
         await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
       const androidTargets = resolveTargets(config, "android");
       const apkFlag = androidTargets.includes("apk") ? "--apk" : "";
@@ -207,7 +208,7 @@ export async function build(config) {
     }
     case "ios": {
       if (!fs.existsSync(fs.resolve(cwd, "gen", "ios"))) await tauri("ios init", { cwd, onLine });
-      if (iconPath && fs.existsSync(iconPath)) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
+      if (iconPath) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
       const iosTargets = resolveTargets(config, "ios");
       const archiveFlag = iosTargets.includes("app") && !iosTargets.includes("ipa") ? "--archive-only" : "";
       await tauri(`ios build ${debug} ${archiveFlag}`, { cwd, onLine });
@@ -215,7 +216,7 @@ export async function build(config) {
       return { type, paths: artifacts };
     }
     case "desktop": {
-      if (iconPath && fs.existsSync(iconPath))
+      if (iconPath)
         await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
       const crossTarget = config?.crossCompile || "";
       const targetFlag = crossTarget ? `--target ${crossTarget}` : "";
@@ -384,12 +385,6 @@ function assertTauriVersion() {
         `Update both to the same version. See the "Upgrading Tauri" section in the README.`,
     );
   }
-}
-
-function resolveIconPath(config) {
-  if (!config?.icon || !config?.buildDir) return null;
-  if (fs.isAbsolute(config.icon)) return config.icon;
-  return fs.resolve(config.buildDir, "www", String(config.icon).replace(/^\/+/, ""));
 }
 
 function desktopBuildHint() {

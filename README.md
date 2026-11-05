@@ -84,6 +84,11 @@ await Tauri.run({
 Builds the Tauri app for distribution (Android APK, Windows installer, etc.).
 Same config shape as `run`. The `platform` field is required.
 
+`icon` accepts a path relative to `buildDir/www`, a web-root asset URL such as
+`/assets/icon.png`, or an absolute filesystem path. Existing bundled assets take
+precedence over absolute paths. A configured icon that cannot be found fails the
+build rather than silently keeping old generated icons.
+
 ```javascript
 await Tauri.build({
   platform: "android",

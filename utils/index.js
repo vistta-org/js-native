@@ -263,5 +263,6 @@ export function exec(cmd, args = "", options = {}) {
 
 export { applyTemplate } from "./apply-template.js";
 export { generateIcons } from "./icons.js";
+export { resolveIconPath } from "./resolve-icon-path.js";
 export { writeIfChanged } from "./write-if-changed.js";
 export { platform };
