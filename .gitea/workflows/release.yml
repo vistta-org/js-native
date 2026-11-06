@@ -54,7 +54,27 @@ jobs:
 
       - name: Unit Tests
         working-directory: ./packages/${{ env.module }}
-        run: npx vistta test
+        run: npm test
+
+      - name: Packed Consumer Smoke
+        working-directory: ./packages/${{ env.module }}
+        run: npm run test:package
+
+      - name: Install Native Build Tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxdo-dev libssl-dev libdbus-1-dev
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+
+      - name: Packed Desktop Release Build
+        working-directory: ./packages/${{ env.module }}
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          npm run test:native
+
+      - name: Dependency Audit
+        working-directory: ./packages/${{ env.module }}
+        run: npm audit --omit=dev --workspace=@vistta/js-native
 
   Release:
     needs: Validation
@@ -75,6 +95,9 @@ jobs:
         with:
           target: inline
           run: |
+            const { readFile } = await import("node:fs/promises");
+            const manifest = JSON.parse(await readFile("package.json", "utf8"));
+            if (manifest.name !== "@vistta/js-native") throw new Error("Release must run from the js-native package root.");
             await git.config("user.email", "devops@vistta.org");
             const type = "${{ inputs.type }}".toLowerCase();
             const channel = ["alpha", "beta"].includes(type) ? type : null;

@@ -40,4 +40,8 @@ jobs:
 
       - name: Unit Tests
         working-directory: ./packages/${{ env.module }}
-        run: npx vistta test
+        run: npm test
+
+      - name: Packed Consumer Smoke
+        working-directory: ./packages/${{ env.module }}
+        run: npm run test:package

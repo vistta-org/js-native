@@ -144,26 +144,7 @@ export const PLUGINS = [
     id: "shell",
     crate: "tauri-plugin-shell",
     version: "2",
-    permissions: [
-      {
-        identifier: "shell:allow-execute",
-        allow: [
-          { name: "cmd", cmd: "cmd", args: true },
-          { name: "powershell", cmd: "powershell", args: true },
-          { name: "npx", cmd: "npx", args: true },
-          { name: "npm", cmd: "npm", args: true },
-          { name: "node", cmd: "node", args: true },
-        ],
-      },
-      {
-        identifier: "shell:allow-spawn",
-        allow: [
-          { name: "npm", cmd: "npm", args: true },
-          { name: "npx", cmd: "npx", args: true },
-          { name: "node", cmd: "node", args: true },
-        ],
-      },
-    ],
+    permissions: [],
   },
 ];
 

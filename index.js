@@ -1,4 +1,5 @@
 import fs from "@vistta/fs";
+import { fileURLToPath } from "node:url";
 import {
   mergeConfig,
   patchAndroidManifest,
@@ -25,6 +26,7 @@ import {
 } from "./utils/index.js";
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./rust");
+const TAURI_CLI = fileURLToPath(import.meta.resolve("@tauri-apps/cli/tauri.js"));
 const TAURI_VERSION = "2.12.1";
 const DEV = process.env.NODE_ENV === "development";
 
@@ -55,7 +57,7 @@ const DEV = process.env.NODE_ENV === "development";
  * @property {Object} [extraTauriConfig] - Deep-merged into the generated tauri.conf.json.
  * @property {Record<string, string|object>} [extraCargoDependencies] - Extra Cargo deps appended to [dependencies].
  * @property {Array<string|object>} [extraCapabilities] - Extra entries merged into capabilities/default.json permissions.
- * @property {string} [devUrl] - For `run()`: dev server URL the webview loads (otherwise frontendDist is used).
+ * @property {string} [devUrl] - Tauri devUrl for external dev tooling. run() only launches an already-built app.
  * @property {Object | string} [keystore] - Path to a pre-existing Android signing keystore (`.keystore`/`.jks`) or an object with `file` and `password` properties. If set, overrides auto-generation.
  * @property {string} [keystore.file] - Path to a pre-existing Android signing keystore (`.keystore`/`.jks`). If set, overrides auto-generation.
  * @property {string} [keystore.password] - Password for the keystore and key (alias is `upload`). If `keystore.file` is set but this is omitted, falls back to the `ANDROID_KEYSTORE_PASSWORD` env var.
@@ -81,52 +83,71 @@ export async function run(config) {
     case "ios":
       throw new Error("iOS target is not supported yet.");
     case "android": {
-      try {
-        let closeCallback = null;
-        let closed = false;
-        const appId = resolveApplicationId(config);
-        const namespace = resolveAppId(config);
-        await adb(
-          `install -r ${fs.resolve(
-            config.buildDir,
-            "gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk",
-          )}`,
-        );
-        // The component name is {applicationId}/{namespace}.MainActivity.
-        // The applicationId may have a .dev suffix (via debugApplicationIdSuffix)
-        // but the activity class lives under the stable namespace.
-        await adb(`shell am start -n ${appId}/${namespace}.MainActivity`);
-        const interval = setInterval(async () => {
+      let closeCallback = null;
+      let closed = false;
+      const appId = resolveApplicationId(config);
+      const namespace = resolveAppId(config);
+      const type = DEV ? "debug" : "release";
+      const apk = fs.resolve(
+        config.buildDir,
+        `gen/android/app/build/outputs/apk/universal/${type}/app-universal-${type}.apk`,
+      );
+      if (!fs.existsSync(apk))
+        throw new Error(`Built APK not found at ${apk}. Run build() with target: "apk" in the same NODE_ENV first.`);
+      await adb(["install", "-r", apk]);
+      // The component name is {applicationId}/{namespace}.MainActivity.
+      // The applicationId may have a .dev suffix (via debugApplicationIdSuffix)
+      // but the activity class lives under the stable namespace.
+      await adb(["shell", "am", "start", "-n", `${appId}/${namespace}.MainActivity`]);
+      let resolveClosed;
+      const completion = new Promise((resolve) => {
+        resolveClosed = resolve;
+      });
+      const finish = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+        resolveClosed();
+        closeCallback?.(0, null);
+      };
+      let polling = false;
+      const interval = setInterval(async () => {
+        if (closed || polling) return;
+        polling = true;
+        try {
+          const result = await adb(["shell", "pidof", appId]);
+          if (!result.trim()) finish();
+        } catch {
+          finish();
+        } finally {
+          polling = false;
+        }
+      }, 1000);
+      return {
+        on(event, callback) {
+          if (event === "close") closeCallback = callback;
+        },
+        close: async () => {
+          if (closed) return;
           try {
-            const result = await adb(`shell dumpsys activity activities ${appId}`);
-            if (!result.toString().includes(appId)) throw new Error("App not running");
-          } catch {
-            closed = true;
-            if (closeCallback) closeCallback(0, null);
-            clearInterval(interval);
+            await adb(["shell", "am", "force-stop", appId]);
+          } finally {
+            finish();
           }
-        }, 1000);
-        return {
-          on(event, callback) {
-            if (event === "close") closeCallback = callback;
-          },
-          close: async () => {
-            await adb(`shell am force-stop ${appId}`);
-          },
-          end: () =>
-            new Promise((resolve) => {
-              closeCallback = resolve;
-              if (closed) resolve();
-            }),
-        };
-      } catch {
-        throw new Error("ADB not found. Please install Android SDK Platform Tools and ensure 'adb' is in your PATH.");
-      }
+        },
+        end: () => completion,
+      };
     }
     case "desktop": {
       const info = await getInfo(config);
       const app = info.name + (platform() === "win32" ? ".exe" : "");
-      return exec(fs.resolve(config.buildDir, "target/debug", app), "", { shell: false });
+      const target = config.crossCompile
+        ? fs.resolve(config.buildDir, "target", config.crossCompile)
+        : fs.resolve(config.buildDir, "target");
+      const executable = fs.resolve(target, DEV ? "debug" : "release", app);
+      if (!fs.existsSync(executable))
+        throw new Error(`Built executable not found at ${executable}. Run build() in the same NODE_ENV first.`);
+      return exec(executable, [], { shell: false });
     }
     default:
       throw new Error(`Unsupported platform "${config.platform}". Supported platforms: desktop, android, ios.`);
@@ -186,49 +207,51 @@ export async function build(config) {
   switch (config.platform) {
     case "android": {
       const androidGen = fs.resolve(cwd, "gen", "android");
-      if (!fs.existsSync(androidGen)) await tauri("android init", { cwd, onLine });
+      if (!fs.existsSync(androidGen)) await tauri(["android", "init"], { cwd, onLine });
       await patchBuildTask(cwd, config);
       await patchAndroidManifest(cwd, config);
       await patchMainActivity(cwd, config);
       await patchAndroidStrings(cwd, config);
-      await patchAppGradleSigning(cwd, config);
-      if (iconPath)
-        await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
+      const signingEnv = await patchAppGradleSigning(cwd, config);
+      await generateIcons({ target: "android", buildDir: cwd, sourceIcon: iconPath });
       const androidTargets = resolveTargets(config, "android");
       const apkFlag = androidTargets.includes("apk") ? "--apk" : "";
       const aabFlag = androidTargets.includes("aab") ? "--aab" : "";
-      const formatFlags = (apkFlag || aabFlag) && `${apkFlag} ${aabFlag}`.trim();
+      const formatFlags = [apkFlag, aabFlag].filter(Boolean);
       try {
-        await tauri(`android build ${debug} ${formatFlags}`, { cwd, onLine });
-      } catch {
-        throw new Error("Build failed. Please ensure you have the Android SDK and necessary build tools installed.");
+        await tauri(["android", "build", ...[debug].filter(Boolean), ...formatFlags], {
+          cwd,
+          onLine,
+          env: { ...process.env, ...signingEnv },
+        });
+      } catch (error) {
+        throw new Error(`Android build failed: ${error.message}. Check the Android SDK and build tools.`, { cause: error });
       }
       if (artifacts.length === 0) artifacts.push(...defaultAndroidArtifacts(cwd, debug, androidTargets));
       return { type, paths: artifacts };
     }
     case "ios": {
-      if (!fs.existsSync(fs.resolve(cwd, "gen", "ios"))) await tauri("ios init", { cwd, onLine });
-      if (iconPath) await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
+      if (!fs.existsSync(fs.resolve(cwd, "gen", "ios"))) await tauri(["ios", "init"], { cwd, onLine });
+      await generateIcons({ target: "ios", buildDir: cwd, sourceIcon: iconPath });
       const iosTargets = resolveTargets(config, "ios");
       const archiveFlag = iosTargets.includes("app") && !iosTargets.includes("ipa") ? "--archive-only" : "";
-      await tauri(`ios build ${debug} ${archiveFlag}`, { cwd, onLine });
+      await tauri(["ios", "build", ...[debug, archiveFlag].filter(Boolean)], { cwd, onLine });
       if (artifacts.length === 0) artifacts.push(...defaultIosArtifacts(cwd));
       return { type, paths: artifacts };
     }
     case "desktop": {
-      if (iconPath)
-        await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
+      await generateIcons({ target: "desktop", buildDir: cwd, sourceIcon: iconPath });
       const crossTarget = config?.crossCompile || "";
-      const targetFlag = crossTarget ? `--target ${crossTarget}` : "";
+      const targetFlag = crossTarget ? ["--target", crossTarget] : [];
       try {
-        await tauri(`build ${debug} ${targetFlag}`, { cwd, onLine });
-      } catch {
-        throw new Error(desktopBuildHint());
+        await tauri(["build", ...[debug].filter(Boolean), ...targetFlag], { cwd, onLine });
+      } catch (error) {
+        throw new Error(`${desktopBuildHint()} ${error.message}`, { cause: error });
       }
       // Prefer installers (msi/nsis) captured from tauri output; fall back to
       // well-known bundle paths, then the raw binary.
       if (artifacts.length === 0) artifacts.push(...defaultDesktopBundles(cwd, debug, config?.app?.version, crossTarget));
-      artifacts.push(...(await defaultDesktopArtifacts(cwd, debug, crossTarget)));
+      artifacts.push(...(await defaultDesktopArtifacts(cwd, debug, crossTarget, config)));
       return { type, paths: artifacts };
     }
     default:
@@ -270,6 +293,7 @@ export function artifactName({ appName, name, version, type, sourcePath }) {
 }
 
 export { getInfo, platform, TAURI_VERSION };
+export const Tauri = { run, build };
 
 function defaultAndroidArtifacts(cwd, debug, targets) {
   const buildType = debug ? "debug" : "release";
@@ -297,16 +321,12 @@ function defaultIosArtifacts(cwd) {
   return [fs.resolve(cwd, "gen/ios/build/Build/Products/Release-iphoneos")];
 }
 
-async function defaultDesktopArtifacts(cwd, debug, crossTarget = "") {
-  const info = await getInfo({});
+async function defaultDesktopArtifacts(cwd, debug, crossTarget = "", config = {}) {
+  const info = await getInfo(config);
   const isWindows = crossTarget ? /-windows-/.test(crossTarget) : platform() === "win32";
   const exe = info.name + (isWindows ? ".exe" : "");
   const targetDir = crossTarget ? fs.resolve(cwd, "target", crossTarget) : fs.resolve(cwd, "target");
-  const release = fs.resolve(targetDir, "release", exe);
-  const dbg = fs.resolve(targetDir, "debug", exe);
-  if (fs.existsSync(release)) return [release];
-  if (fs.existsSync(dbg)) return [dbg];
-  return [debug ? dbg : release];
+  return [fs.resolve(targetDir, debug ? "debug" : "release", exe)];
 }
 
 /**
@@ -363,11 +383,11 @@ async function applyConfig(config) {
 }
 
 /**
- * Asserts that the `@tauri-apps/cli` version in this package's
- * `package.json` matches the hardcoded `TAURI_VERSION` in `index.js`.
+ * Asserts that the declared and resolved installed CLI versions match
+ * the hardcoded template baseline `TAURI_VERSION`.
  * The two are separate sources of truth — `TAURI_VERSION` drives the
  * template baseline and the generated `Cargo.toml`, while
- * `@tauri-apps/cli` is what `npx tauri` actually runs. A mismatch causes
+ * `@tauri-apps/cli` is resolved directly for execution. A mismatch causes
  * confusing build failures (e.g. the template is for 2.11 but the CLI is
  * 2.12 and emits a different `gen/android` layout). This check turns a
  * silent mismatch into a clear error at the start of the build.
@@ -376,12 +396,10 @@ function assertTauriVersion() {
   const pkgPath = fs.resolve(import.meta.dirname, "package.json");
   const pkg = JSON.parse(String(fs.readFileSync(pkgPath, "utf8")));
   const cliDep = pkg.dependencies?.["@tauri-apps/cli"];
-  if (!cliDep) return;
-  // Extract the version from the semver range (e.g. "^2.11.2" → "2.11.2").
-  const cliVersion = cliDep.replace(/^[^0-9]+/, "");
-  if (cliVersion !== TAURI_VERSION) {
+  const installed = JSON.parse(String(fs.readFileSync(fs.resolve(fs.dirname(TAURI_CLI), "package.json"), "utf8")));
+  if (cliDep !== TAURI_VERSION || installed.version !== TAURI_VERSION) {
     throw new Error(
-      `Tauri version mismatch: TAURI_VERSION in index.js is "${TAURI_VERSION}" but @tauri-apps/cli in package.json is "${cliDep}". ` +
+      `Tauri version mismatch: expected "${TAURI_VERSION}", declared "${cliDep}", installed "${installed.version}". ` +
         `Update both to the same version. See the "Upgrading Tauri" section in the README.`,
     );
   }
@@ -400,12 +418,26 @@ function desktopBuildHint() {
   }
 }
 
-function adb(args, options) {
-  return exec("adb", args, { shell: false, ...options }).end();
+async function adb(args) {
+  let output = "";
+  const command = exec("adb", args, { shell: false, stdio: "pipe" });
+  command.on("data", (text) => {
+    output += text;
+  });
+  try {
+    await command.end();
+  } catch (error) {
+    if (error.code === "ENOENT")
+      throw new Error("ADB not found. Please install Android SDK Platform Tools and ensure 'adb' is in your PATH.", {
+        cause: error,
+      });
+    throw new Error(`ADB command failed: ${output.trim() || error.message}`, { cause: error });
+  }
+  return output;
 }
 
 /**
- * Spawns `npx tauri <args>` and waits for completion.
+ * Spawns the installed Tauri CLI with an argument array and waits for completion.
  *
  * The mode handling (tee-to-TTY + dispatch when an `onLine`
  * callback is present, inherit-stdio fast path otherwise) lives in `exec()`
@@ -420,5 +452,5 @@ function tauri(args, options = {}) {
   // exec() dispatches via `onOutput(msg, isError)`; index.js uses `onLine(msg)`.
   // Bridge the two so collectLine actually receives tauri's stdout.
   const execOptions = onLine ? { ...rest, onOutput: (msg) => onLine(msg) } : rest;
-  return exec("npx", `tauri ${args}`, execOptions).end();
+  return exec(process.execPath, [TAURI_CLI, ...args], { ...execOptions, shell: false }).end();
 }

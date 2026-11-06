@@ -1,9 +1,16 @@
 .gitea
 
 # Android/Gradle build artifacts (regenerate on every build)
-rust/plugin/android/build/
-rust/plugin/android/.tauri/
-rust/plugin/android/.gradle/
+rust/plugins/*/android/build/
+rust/plugins/*/android/.tauri/
+rust/plugins/*/android/.gradle/
+rust/.build/
 
-# Rust target directory
-rust/plugin/target/
+# Rust target directories
+rust/target/
+rust/plugins/*/target/
+
+# Signing secrets
+**/*.keystore
+**/*.jks
+**/android.keystore.properties

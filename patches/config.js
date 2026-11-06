@@ -61,7 +61,15 @@ export async function mergeConfig(targetDir, config) {
     bundle: {
       active: true,
       targets: resolveBundleTargets(config),
-      icon: ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+      icon:
+        config?.platform === "ios"
+          ? ["icons/1024x1024.png"]
+          : [
+              "icons/32x32.png",
+              "icons/128x128.png",
+              "icons/128x128@2x.png",
+              ...(config?.platform === "android" ? [] : ["icons/icon.icns", "icons/icon.ico"]),
+            ],
       // In development, Tauri appends this suffix to the Android
       // applicationId so the dev APK installs side-by-side with the
       // release APK. The namespace stays stable (no suffix) so the

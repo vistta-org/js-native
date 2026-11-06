@@ -1,4 +1,6 @@
 import fs from "@vistta/fs";
+import { randomBytes } from "node:crypto";
+import { chmod } from "node:fs/promises";
 import { devSuffix, exec, resolveAppId, writeIfChanged } from "../utils/index.js";
 
 const DEV = process.env.NODE_ENV === "development";
@@ -242,10 +244,9 @@ const RELEASE_SIGNING = { begin: "// vistta:release-signing:begin", end: "// vis
  *
  * **Release builds**: if no keystore exists at `buildDir/android.keystore`,
  * one is generated via `keytool` with a fixed alias ("upload") and a
- * persistent password stored in `buildDir/android.keystore.properties`.
+ * random password stored privately in `buildDir/android.keystore.properties`.
  * The keystore is copied into `gen/android/app/release.keystore` and the
- * Gradle file is patched to use it. The password is read from the
- * properties file (not env vars) so the build is self-contained.
+ * Gradle file reads credentials from the environment returned by this function.
  *
  * **Debug builds**: the signing config is removed from `build.gradle.kts`
  * and the copied keystore is deleted from `gen/android/app/`. The
@@ -300,32 +301,43 @@ export async function patchAppGradleSigning(targetDir, config) {
     keyAlias = "upload";
 
     if (!fs.existsSync(keystorePath)) {
-      // Generate a new keystore. Use a deterministic password derived from
-      // the app id so it's stable across builds but not trivially guessable.
-      // The password is persisted in a properties file alongside the keystore.
-      storePassword = generateKeystorePassword(config);
+      if (fs.existsSync(propsPath))
+        throw new Error(
+          `Signing properties exist at ${propsPath} but the matching keystore is missing. Restore the keystore before building.`,
+        );
+      storePassword = randomBytes(32).toString("hex");
       keyPassword = storePassword;
-      await fs.writeFile(propsPath, `storePassword=${storePassword}\nkeyPassword=${keyPassword}\nkeyAlias=${keyAlias}\n`);
-      await exec("keytool", [
-        "-genkeypair",
-        "-keystore",
-        keystorePath,
-        "-alias",
-        keyAlias,
-        "-keyalg",
-        "RSA",
-        "-keysize",
-        "2048",
-        "-validity",
-        "10000",
-        "-storepass",
-        storePassword,
-        "-keypass",
-        keyPassword,
-        "-dname",
-        "CN=Vistta, OU=Vistta, O=Vistta, L=Unknown, ST=Unknown, C=Unknown",
-        // keytool is a real executable; a Windows shell would split the -dname value at its spaces.
-      ], { shell: false }).end();
+      await exec(
+        "keytool",
+        [
+          "-genkeypair",
+          "-keystore",
+          keystorePath,
+          "-alias",
+          keyAlias,
+          "-keyalg",
+          "RSA",
+          "-keysize",
+          "2048",
+          "-validity",
+          "10000",
+          "-storepass:env",
+          "VISTTA_ANDROID_STORE_PASSWORD",
+          "-keypass:env",
+          "VISTTA_ANDROID_KEY_PASSWORD",
+          "-dname",
+          "CN=Vistta, OU=Vistta, O=Vistta, L=Unknown, ST=Unknown, C=Unknown",
+          // keytool is a real executable; a Windows shell would split the -dname value at its spaces.
+        ],
+        {
+          shell: false,
+          env: { ...process.env, VISTTA_ANDROID_STORE_PASSWORD: storePassword, VISTTA_ANDROID_KEY_PASSWORD: keyPassword },
+        },
+      ).end();
+      await fs.writeFile(propsPath, `storePassword=${storePassword}\nkeyPassword=${keyPassword}\nkeyAlias=${keyAlias}\n`, {
+        mode: 0o600,
+        flag: "wx",
+      });
     } else if (fs.existsSync(propsPath)) {
       // Load existing password from the properties file.
       const props = String(await fs.readFile(propsPath, "utf8"));
@@ -335,25 +347,30 @@ export async function patchAppGradleSigning(targetDir, config) {
     } else {
       // Keystore exists but no properties file — can't recover the password.
       throw new Error(
-        `Keystore exists at ${keystorePath} but no properties file found at ${propsPath}. Delete the keystore to regenerate, or provide a keystore config with a password.`,
+        `Keystore exists at ${keystorePath} but no properties file found at ${propsPath}. Restore its credentials or provide a keystore config with a password. Do not delete a deployed app's signing key.`,
       );
     }
+    await chmod(keystorePath, 0o600);
+    await chmod(propsPath, 0o600);
   }
+
+  if (!storePassword || !keyPassword) throw new Error("Android signing requires a non-empty keystore password.");
 
   // Copy the keystore into gen/android/app/ so Gradle can find it with a
   // relative path. This keeps the persistent keystore in buildDir safe
   // from `tauri android init` re-generation.
   const copiedKeystore = fs.resolve(targetDir, "gen", "android", "app", "release.keystore");
   await fs.cp(keystorePath, copiedKeystore, { force: true });
+  await chmod(copiedKeystore, 0o600);
 
   const signingBlock = [
     SIGNING.begin,
     `    signingConfigs {`,
     `        create("visttaRelease") {`,
     `            storeFile = file("release.keystore")`,
-    `            storePassword = "${escapeKotlinString(storePassword)}"`,
-    `            keyAlias = "${escapeKotlinString(keyAlias)}"`,
-    `            keyPassword = "${escapeKotlinString(keyPassword)}"`,
+    `            storePassword = System.getenv("VISTTA_ANDROID_STORE_PASSWORD")`,
+    `            keyAlias = System.getenv("VISTTA_ANDROID_KEY_ALIAS")`,
+    `            keyPassword = System.getenv("VISTTA_ANDROID_KEY_PASSWORD")`,
     `        }`,
     `    }`,
     SIGNING.end,
@@ -380,27 +397,11 @@ export async function patchAppGradleSigning(targetDir, config) {
   }
 
   await writeIfChanged(appGradlePath, content);
-}
-
-/**
- * Generates a stable but non-trivial password for the auto-generated
- * keystore, derived from the app id. This is not a security measure —
- * the keystore is a build artifact, not a production secret. The
- * password just needs to be consistent across builds so the keystore
- * can be reused.
- */
-function generateKeystorePassword(config) {
-  const id = config?.app?.id || "org.vistta.app";
-  // Simple hash: not cryptographically secure, just stable.
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
-  }
-  return `vistta-${(hash >>> 0).toString(36)}-release`;
-}
-
-function escapeKotlinString(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$");
+  return {
+    VISTTA_ANDROID_STORE_PASSWORD: storePassword,
+    VISTTA_ANDROID_KEY_PASSWORD: keyPassword,
+    VISTTA_ANDROID_KEY_ALIAS: keyAlias,
+  };
 }
 
 /**

@@ -1,10 +1,10 @@
 # @vistta/js-native
 
-Unified runtime for building cross-platform applications (mobile, desktop, web) using **Tauri v2**.
+Native runtime for building Android and desktop applications using **Tauri v2**.
 
 ## Features
 
-- **Single codebase** for all platforms: Android, macOS, Windows, Linux, and Web (iOS planned)
+- **Single codebase** for Android, macOS, Windows, and Linux. iOS build support is experimental and `run()` does not support iOS. Browser plugin fallbacks are not a Web build target.
 - **JS-only for app developers** — no Rust required; the runtime owns `src-tauri/`
 - **Built-in integrations**: Clipboard, Dialog, Filesystem, Haptics, Notification, Shell, plus `System` (app metadata + path resolution from the Tauri core API)
 - **Smaller bundle than Electron** (Tauri ships a webview, not a full browser)
@@ -17,12 +17,13 @@ npm install @vistta/js-native
 
 ## Quick Start
 
+Put your bundled frontend in `build/www/`, including `index.html`, then build and launch it:
+
 ```javascript
 import { Tauri } from "@vistta/js-native";
 
-// Launches `tauri dev` for desktop, `tauri android dev` for Android.
-await Tauri.run({
-  platform: "desktop", // required: "desktop" | "android" | "ios" | "linux" | "windows" | "macos"
+const config = {
+  platform: "desktop", // "desktop" | "android" | "linux" | "windows" | "macos"
   buildDir: "./build", // src-tauri root for this app
   app: {
     id: "com.example.myapp",
@@ -30,7 +31,10 @@ await Tauri.run({
   },
   title: "My App",
   backgroundColor: "#ffffff",
-});
+};
+await Tauri.build(config);
+const app = await Tauri.run(config);
+await app.end();
 ```
 
 `run` and `build` are also available as named exports:
@@ -43,14 +47,14 @@ import { run, build } from "@vistta/js-native";
 
 ### `Tauri.run(config)`
 
-Generates / refreshes `src-tauri/` files from the config, then runs the platform-specific
-Tauri dev loop:
+Launches an already-built application. Call `build(config)` first, using the same
+configuration and `NODE_ENV`:
 
-- `platform: "desktop"` (or `"linux"`/`"windows"`/`"macos"`) → `npx tauri dev`
-- `platform: "android"` → `npx tauri android dev`
+- `platform: "desktop"` (or `"linux"`/`"windows"`/`"macos"`) launches the native binary from `target/release`, or `target/debug` with `NODE_ENV=development`. A configured cross-compile target adds its target-triple directory; a foreign binary cannot run on an incompatible host.
+- `platform: "android"` installs the matching release/debug universal APK and starts its activity using ADB. Build with `target: "apk"` when you intend to run it. Missing artifacts and device/install failures are reported directly.
 - `platform: "ios"` → not yet supported
 
-`"windows"` and `"macos"` auto-set `crossCompile` to the appropriate Rust target triple; `"linux"` and `"desktop"` build natively. Cross-compilation is automatic — no extra flags needed.
+`run()` does not generate configuration, start a dev server, or invoke `tauri dev` / `tauri android dev`. Set `NODE_ENV` before starting the Node process; build mode is selected when the runtime is imported.
 
 ```javascript
 await Tauri.run({
@@ -88,6 +92,8 @@ Same config shape as `run`. The `platform` field is required.
 `/assets/icon.png`, or an absolute filesystem path. Existing bundled assets take
 precedence over absolute paths. A configured icon that cannot be found fails the
 build rather than silently keeping old generated icons.
+When `icon` is omitted, the runtime generates a neutral default icon and all
+platform-referenced icon assets, so a minimal config is buildable.
 
 ```javascript
 await Tauri.build({
@@ -123,7 +129,7 @@ await Tauri.build({
   // Extra permission entries merged into capabilities/default.json.
   extraCapabilities: [
     "core:webview:allow-print",
-    { identifier: "shell:allow-execute", allow: [{ name: "git", cmd: "git", args: true }] },
+    { identifier: "shell:allow-execute", allow: [{ name: "git", cmd: "git", args: ["--version"] }] },
   ],
 
   // Override the default CSP (defaults to null = disabled).
@@ -133,8 +139,6 @@ await Tauri.build({
   // tauri.conf.json bundle config. Android: provide a pre-existing keystore
   // path + password.
   keystore: { file: "./release.keystore", password: "..." },
-  // Dev-only: pass through a custom dev server URL (otherwise frontendDist is used).
-  devUrl: "http://localhost:5173",
 });
 ```
 
@@ -143,11 +147,20 @@ await Tauri.build({
 > defaults rather than concatenating, so callers can fully control list-valued
 > fields like `app.windows`.
 
+Default capabilities do not allow command execution or spawning. `extraCapabilities`
+is an explicit trust boundary: entries must be permission strings or objects with
+an `identifier` and optional array-valued `allow` / `deny` scopes. Broad grants
+produce security warnings. Avoid shells, wildcard filesystem scopes, and
+`args: true`; grant only named executables and fixed arguments that the app needs.
+`extraTauriConfig` can override security settings too; review it as trusted native
+application configuration. A CSP is disabled by default; configure one appropriate
+to your frontend, especially if it renders external content.
+
 #### Return value
 
 `run` and `build` return different shapes:
 
-- `run` returns an `exec` handle of `{ close, on, end }`. `run` is long-lived — keep the handle and call `handle.close()` to stop the dev process.
+- `run` returns a handle of `{ close, on, end }`. Keep it and call `handle.close()` to stop the launched app; `await handle.end()` waits for exit. Android monitors the app process, not only its foreground activity.
 - `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, installers + native binary for desktop). The runtime parses tauri output for `Finished ... at:` markers (both single-line `Finished 1 artifact at: <path>` and multi-line `Finished N bundles at:` followed by indented paths) and falls back to well-known default paths when no markers are emitted. The promise rejects with an `Error` on non-zero exit.
 
 The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to the build output directory using a versioned name derived from `artifactName()`:
@@ -572,7 +585,6 @@ background scheduler (see [Scheduler](#scheduler) below).
 
 - Foreground service for non-scheduler purposes (e.g. long-running sync
   workers)
-- Auto-generated release keystore (you must provide your own)
 
 **Android release signing.** Tauri does not support Android keystore
 signing via `tauri.conf.json` — it must be done in Gradle. The runtime
@@ -580,16 +592,29 @@ auto-generates and manages the keystore for you:
 
 - **Release builds**: if no keystore exists at `buildDir/android.keystore`,
   one is generated via `keytool` with a fixed alias (`upload`) and a
-  stable password derived from the app id. The password is persisted in
+  cryptographically random 256-bit password. The password is persisted in
   `buildDir/android.keystore.properties`. The keystore is copied into
   `gen/android/app/release.keystore` and the Gradle `signingConfigs` block
-  is injected into `app/build.gradle.kts`. The persistent keystore in
+  reads secrets from the build child process environment, not literal passwords
+  in `app/build.gradle.kts` or command arguments. Local signing files use mode
+  `0600` on POSIX; restrict their directory and ACLs on Windows. The persistent keystore in
   `buildDir/` is reused across builds so the signing key stays stable
   (same key = upgradeable APK).
 - **Debug builds**: no keystore is used. Any previously-injected signing
   config is stripped from `build.gradle.kts` and the copied keystore is
   removed from `gen/android/app/`. The persistent keystore in `buildDir/`
   is kept for the next release build.
+
+**Signing files are secrets.** Automatic generation is a local convenience, not
+an OS keychain. Keep the keystore and properties file out of source control and
+shared build artifacts, and back both up securely. The package excludes keystores
+and their password properties from npm archives. Production/CI should provide a
+backed-up keystore and `ANDROID_KEYSTORE_PASSWORD` through a secret manager.
+Explicit keystores require a non-empty password; no password is guessed.
+Existing signing identities are never silently replaced. Legacy keystores created
+with an app-id-derived password are reused for compatibility: back them up and
+change their store/key passwords with `keytool` before production use. Deleting a
+deployed app's signing key can prevent future updates.
 
 To use your own keystore instead of the auto-generated one, set
 `keystore` to either a string (path only, password from `ANDROID_KEYSTORE_PASSWORD`
@@ -598,12 +623,45 @@ key; alias is `upload`):
 
 ```javascript
 await Tauri.build({
-  target: "android",
+  platform: "android",
   buildDir: "./build",
   app: { id: "com.example.app", name: "My App" },
   keystore: { file: "./release.keystore", password: "..." },
 });
 ```
+
+## Release Validation
+
+From this package directory in the workspace:
+
+```bash
+npm test
+npm run test:package
+npm run test:native
+```
+
+`npm test` covers signing, process execution, capabilities, lifecycle selection,
+and generated icons. `test:package` packs the archive, checks for generated
+outputs/secrets, installs it in an isolated consumer, and checks public exports.
+It uses `--legacy-peer-deps` only for this fixture because the coordinated
+`@vistta/js@0.0.1` peer is not published yet; this is not peer-compatibility
+evidence. The normal consumer must install a compatible peer.
+
+`test:native` additionally compiles a blank desktop release binary from that
+installed archive. It requires Rust/Cargo and the host's Tauri prerequisites
+(Visual C++ Build Tools on Windows, Xcode tools on macOS, or WebKitGTK/GTK,
+ALSA, D-Bus and related development libraries on Linux). It does not launch a
+window or build installers. The release workflow installs Linux prerequisites
+and requires this native gate before publishing. Android deployment/signing and
+cross-compilation still need their platform SDKs and device/toolchain validation.
+
+The Tauri CLI is pinned to exactly `2.12.1`, invoked from this package's resolved
+installation without `npx`, and checked against its installed manifest. Update
+the dependency and `TAURI_VERSION` together when upgrading the baseline.
+Rust crates have independent versions and semver ranges: retain the generated
+`Cargo.lock` for reproducible consumer builds; CLI version `2.12.1` does not mean
+that the Rust `tauri` crate has that version. Use a Patch release from `0.0.0`
+for `0.0.1`, after the compatible framework peer is available.
 
 ## Integrations
 
@@ -619,7 +677,6 @@ import {
   Recorder,
   Scheduler,
   Shell,
-  Shortcuts,
   Accessibility,
   System,
 } from "@vistta/js-native/plugins";
@@ -630,12 +687,13 @@ import {
 ### Notifications
 
 On Android 13+, the runtime permission **must** be requested before posting.
-Use the bundled helper:
+Use the exported notification API:
 
 ```javascript
-import { Notification, ensureNotificationPermission } from "@vistta/js-native/plugins";
+import { Notification } from "@vistta/js-native/plugins";
 
-if (await ensureNotificationPermission()) {
+const granted = (await Notification.isPermissionGranted()) || (await Notification.requestPermission()) === "granted";
+if (granted) {
   await Notification.sendNotification({ title: "Hello", body: "From Vistta" });
 }
 ```
@@ -1081,6 +1139,11 @@ Limitations to be aware of:
   ones `Request` forbids (such as `Cookie` and `Sec-*`).
 
 ## Clipboard
+
+**Privacy:** Shizuku/Sui and other elevated clipboard backends can read clipboard
+contents while the app is not focused. Enable them only with explicit user
+consent, and treat captured content as potentially sensitive credentials. Do not
+log, retain, or transmit background clipboard content without that consent.
 
 ```javascript
 import { Clipboard } from "@vistta/js-native/plugins";

@@ -17,5 +17,7 @@ import fs from "@vistta/fs";
  */
 export async function applyTemplate({ buildDir, tplDir }) {
   await fs.mkdir(buildDir, { recursive: true });
-  await fs.cp(tplDir, buildDir, { recursive: true });
+  for (const entry of ["build.rs", "Cargo.toml", "tauri.conf.json", "capabilities", "src"]) {
+    await fs.cp(fs.resolve(tplDir, entry), fs.resolve(buildDir, entry), { recursive: true });
+  }
 }

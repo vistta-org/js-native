@@ -14,7 +14,7 @@ async function loadSharp() {
  * @typedef {Object} PlatformIconConfig
  * @property {string} target - Target platform ("desktop", "android", "ios")
  * @property {string} buildDir - Build output directory
- * @property {string} sourceIcon - Path to the source icon file
+ * @property {string|null} [sourceIcon] - Path to a source icon; omitted for the built-in neutral icon.
  */
 
 /**
@@ -23,12 +23,14 @@ async function loadSharp() {
  */
 export async function generateIcons({ target, buildDir, sourceIcon }) {
   const sharp = await loadSharp();
-  const icon = sharp(sourceIcon);
+  const icon = sourceIcon
+    ? sharp(sourceIcon)
+    : sharp({ create: { width: 512, height: 512, channels: 4, background: "#3b3b40" } });
   const metadata = await icon.metadata();
   const size = Math.max(metadata.width || 512, metadata.height || 512);
 
   // Ensure minimum size for quality scaling
-  const source = size < 512 ? await icon.resize(512, 512, { fit: "contain" }).toBuffer() : await icon.toBuffer();
+  const source = size < 512 ? await icon.resize(512, 512, { fit: "contain" }).png().toBuffer() : await icon.png().toBuffer();
 
   await fs.mkdir(fs.resolve(buildDir, "icons"), { recursive: true });
 

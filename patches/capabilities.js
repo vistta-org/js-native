@@ -53,7 +53,37 @@ export async function patchCapabilities(targetDir, config) {
     push(`${p.id}:default`);
     if (Array.isArray(p.permissions)) p.permissions.forEach(push);
   }
-  if (Array.isArray(config?.extraCapabilities)) config.extraCapabilities.forEach(push);
+  const extra = config?.extraCapabilities ?? [];
+  if (!Array.isArray(extra))
+    throw new TypeError("extraCapabilities must be an array of permission identifiers or scope objects.");
+  for (const permission of extra) {
+    const identifier = typeof permission === "string" ? permission : permission?.identifier;
+    if (typeof identifier !== "string" || !identifier.trim() || Array.isArray(permission)) {
+      throw new TypeError(
+        "Each extraCapabilities entry must be a non-empty permission identifier or an object with an identifier.",
+      );
+    }
+    if (
+      typeof permission === "object" &&
+      ["allow", "deny"].some((key) => permission[key] !== undefined && !Array.isArray(permission[key]))
+    ) {
+      throw new TypeError(`Capability ${identifier}: allow and deny scopes must be arrays.`);
+    }
+    if (
+      identifier.includes("*") ||
+      /^shell:allow-(execute|spawn)$/.test(identifier) ||
+      permission?.allow?.some(
+        (scope) =>
+          scope?.args === true ||
+          Object.values(scope || {}).some((value) => typeof value === "string" && value.includes("*")),
+      )
+    ) {
+      console.warn(
+        `Security warning: extraCapabilities grants broad access through ${identifier}. Restrict commands, arguments, and paths to trusted application needs.`,
+      );
+    }
+    push(permission);
+  }
 
   const cap = {
     $schema: "https://schema.tauri.app/config/2",

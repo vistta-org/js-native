@@ -220,12 +220,20 @@ export function exec(cmd, args = "", options = {}) {
 
   const { onOutput, ...spawnOptions } = options || {};
   const stdio = spawnOptions.stdio ? spawnOptions.stdio : onOutput ? "pipe" : "inherit";
-  // On Windows, spawn() without shell:true can't find .cmd/.bat wrappers like
-  // npx.cmd. Enable shell mode automatically unless the caller explicitly
-  // set shell: false.
-  const shell = spawnOptions.shell !== undefined ? spawnOptions.shell : process.platform === "win32";
+  const shell = spawnOptions.shell ?? false;
   const merged = Object.assign({ stdio, shell }, spawnOptions);
   const child = spawn(cmd, argv, /** @type {any} */ (merged));
+  const completion = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve(child);
+      else
+        reject(
+          Object.assign(new Error(`Command "${cmd}" exited with code ${code}${signal ? ` (${signal})` : ""}`), { code }),
+        );
+    });
+  });
+  completion.catch(() => {});
 
   if (onOutput && merged.stdio === "pipe") {
     const handler = (data) => {
@@ -250,14 +258,7 @@ export function exec(cmd, args = "", options = {}) {
         child.stderr.on("data", handler);
       } else child.on(event, callback);
     },
-    end() {
-      return new Promise((resolve, reject) => {
-        child.on("close", (code) => {
-          if (code === 0) resolve(child);
-          else reject(new Error(`Command "${cmd} ${Array.isArray(args) ? args.join(" ") : args}" exited with code ${code}`));
-        });
-      });
-    },
+    end: () => completion,
   };
 }
 
