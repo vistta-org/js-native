@@ -1,6 +1,7 @@
 import fs from "@vistta/fs";
 import { randomBytes } from "node:crypto";
 import { chmod } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { devSuffix, exec, resolveAppId, writeIfChanged } from "../utils/index.js";
 
 const DEV = process.env.NODE_ENV === "development";
@@ -34,17 +35,9 @@ const STRINGS = { begin: "<!-- vistta:strings:begin -->", end: "<!-- vistta:stri
 // WRY's generated package tree never drifts and no cleanup is needed.
 
 /**
- * Rewrites Tauri 2.12.1's generated `BuildTask.kt` to call the `tauri` CLI
- * binary directly, instead of going through `npm run -- tauri ...`. The
- * latter assumes the consumer's `package.json` has a `tauri` script; this
- * runtime reaches the tauri binary via `npx tauri` from `index.js`, not
- * through an npm script. Rewriting to a direct invocation makes the
- * consumer's `package.json` self-contained (no `tauri` script required).
- *
- * Idempotent: also recognises and rewrites a previously-patched form
- * (`executable = "tauri"`, args list without the `run`/`--`/`tauri` prefix).
- * If Tauri changes the file's shape dramatically the patch silently
- * no-ops — the build will then fail with a clear error from Gradle.
+ * Rewrites the generated Android task to invoke the resolved Node/Tauri CLI
+ * once, without PATH-dependent wrappers or fallback retries on Cargo errors.
+ * Reapplying the patch is safe for both stock and previously-patched tasks.
  */
 export async function patchBuildTask(targetDir, config) {
   const appId = resolveAppId(config);
@@ -63,13 +56,19 @@ export async function patchBuildTask(targetDir, config) {
   );
   if (!fs.existsSync(buildTaskPath)) return;
   let content = String(await fs.readFile(buildTaskPath, "utf8"));
-  // The tauri binary is resolved from PATH that Gradle passes to the task;
-  // node_modules/.bin is on that PATH (where the tauri CLI lives once the
-  // runtime's transitive deps install it). `npx` is NOT on that PATH.
-  content = content.replace(/val\s+executable\s*=\s*"""(?:npm|npx)"""\s*;?/g, 'val executable = """tauri""";');
-  // Strip the `run`/`--`/`tauri` prefix from the args list, in either order.
-  content = content.replace(/val\s+args\s*=\s*listOf\(\s*"run"\s*,\s*"--"\s*,\s*"tauri"\s*,\s*/g, "val args = listOf(");
-  content = content.replace(/val\s+args\s*=\s*listOf\(\s*"tauri"\s*,\s*/g, "val args = listOf(");
+  const assemble = /@TaskAction\s+fun\s+assemble\(\)\s*\{[\s\S]*?(?=\n\s*fun\s+runTauriCli\b)/;
+  const args = /val\s+args\s*=\s*listOf\([^\n]*\)\s*;?/;
+  if (!assemble.test(content) || !args.test(content)) {
+    throw new Error(`Unsupported Android BuildTask template at ${buildTaskPath}. Cannot safely configure the Tauri CLI.`);
+  }
+  const kotlinString = (value) => JSON.stringify(value).replace(/\$/g, "\\$");
+  const cli = fileURLToPath(import.meta.resolve("@tauri-apps/cli/tauri.js"));
+  content = content.replace(
+    assemble,
+    () => `@TaskAction\n    fun assemble() {\n        runTauriCli(${kotlinString(process.execPath)})\n    }`,
+  );
+  content = content.replace(args, () => `val args = listOf(${kotlinString(cli)}, "android", "android-studio-script");`);
+  content = content.replace(/^import org\.apache\.tools\.ant\.taskdefs\.condition\.Os\r?\n/m, "");
   await writeIfChanged(buildTaskPath, content);
 }
 

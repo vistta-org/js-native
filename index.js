@@ -180,13 +180,15 @@ export async function build(config) {
   const artifacts = [];
   let expectBundlePaths = false;
   const collectLine = (line) => {
-    const header = line.match(/Finished\s+\d+\s+bundles\s+at:\s*$/i);
+    const header = line.match(/Finished\s+\d+\s+(?:bundles?|artifacts?|apks?|aabs?)\s+at:\s*$/i);
     if (header) {
       expectBundlePaths = true;
       return;
     }
     if (expectBundlePaths) {
-      const m = line.match(/^\s+(.+\.(?:msi|exe|app|ipa|apk|aab))$/i);
+      const m = line.match(
+        /^\s+(.+\.(?:msi|exe|app|ipa|apk|aab|deb|rpm|appimage|dmg))(?:\s+\(\d+(?:\.\d+)?\s+[KMGTPE]?i?B\))?\s*$/i,
+      );
       if (m) {
         artifacts.push(m[1].trim());
         return;
@@ -197,11 +199,18 @@ export async function build(config) {
     const m = line.match(/Finished\s+\d+\s+\S+\s+at:\s*(.+)$/i);
     if (m) artifacts.push(m[1].trim());
   };
+  let pendingOutput = "";
   const onLine = (msg) => {
-    for (const line of String(msg).replace(/\r\n/g, "\n").split("\n")) {
+    const lines = (pendingOutput + String(msg)).split(/\r?\n/);
+    pendingOutput = lines.pop();
+    for (const line of lines) {
       if (!line) continue;
       collectLine(line);
     }
+  };
+  const flushOutput = () => {
+    if (pendingOutput) collectLine(pendingOutput);
+    pendingOutput = "";
   };
 
   switch (config.platform) {
@@ -227,6 +236,7 @@ export async function build(config) {
       } catch (error) {
         throw new Error(`Android build failed: ${error.message}. Check the Android SDK and build tools.`, { cause: error });
       }
+      flushOutput();
       if (artifacts.length === 0) artifacts.push(...defaultAndroidArtifacts(cwd, debug, androidTargets));
       return { type, paths: artifacts };
     }
@@ -236,6 +246,7 @@ export async function build(config) {
       const iosTargets = resolveTargets(config, "ios");
       const archiveFlag = iosTargets.includes("app") && !iosTargets.includes("ipa") ? "--archive-only" : "";
       await tauri(["ios", "build", ...[debug, archiveFlag].filter(Boolean)], { cwd, onLine });
+      flushOutput();
       if (artifacts.length === 0) artifacts.push(...defaultIosArtifacts(cwd));
       return { type, paths: artifacts };
     }
@@ -250,9 +261,13 @@ export async function build(config) {
       }
       // Prefer installers (msi/nsis) captured from tauri output; fall back to
       // well-known bundle paths, then the raw binary.
-      if (artifacts.length === 0) artifacts.push(...defaultDesktopBundles(cwd, debug, config?.app?.version, crossTarget));
+      flushOutput();
+      if (artifacts.length === 0 && config?.extraTauriConfig?.bundle?.active !== false)
+        artifacts.push(
+          ...defaultDesktopBundles(cwd, debug, config?.app?.version, crossTarget, resolveTargets(config, "desktop")),
+        );
       artifacts.push(...(await defaultDesktopArtifacts(cwd, debug, crossTarget, config)));
-      return { type, paths: artifacts };
+      return { type, paths: [...new Set(artifacts.map((artifact) => fs.resolve(cwd, artifact)))] };
     }
     default:
       throw new Error(`Unsupported platform "${config.platform}". Supported: desktop, android, ios.`);
@@ -282,8 +297,9 @@ export function artifactName({ appName, name, version, type, sourcePath }) {
       .replace(/[\s\\/:*?"<>|]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .trim();
-  const includeType = /^(apk|exe)$/i.test(ext);
-  const typeSeg = includeType ? `-${type}` : "";
+  const installer = /^\.exe$/i.test(ext) && /[\\/]bundle[\\/]nsis[\\/]/i.test(sourcePath);
+  const includeType = /^\.(apk|exe)$/i.test(ext);
+  const typeSeg = installer ? "-setup" : includeType ? `-${type}` : "";
   const dev = DEV ? ".dev" : "";
   if (name) {
     if (safe(name) !== name) throw new Error(`Invalid artifact name "${name}". Example of a safe name: "${safe(name)}"`);
@@ -334,7 +350,7 @@ async function defaultDesktopArtifacts(cwd, debug, crossTarget = "", config = {}
  * on Linux, .app/.dmg on macOS) when tauri's `Finished N bundles at:` lines
  * weren't captured. Only returns paths that exist on disk.
  */
-function defaultDesktopBundles(cwd, debug, version, crossTarget = "") {
+function defaultDesktopBundles(cwd, debug, version, crossTarget = "", targets = ["all"]) {
   const buildType = debug ? "debug" : "release";
   const targetDir = crossTarget ? fs.resolve(cwd, "target", crossTarget) : fs.resolve(cwd, "target");
   const bundleDir = fs.resolve(targetDir, buildType, "bundle");
@@ -351,7 +367,9 @@ function defaultDesktopBundles(cwd, debug, version, crossTarget = "") {
   // When version is known, only include artifacts whose filename contains it,
   // so stale artifacts from previous builds don't produce duplicates.
   const versionSeg = version ? `_${version}_` : null;
+  const requested = new Set(targets.map((target) => (target === "exe" ? "nsis" : target)));
   for (const dir of candidates) {
+    if (!requested.has("all") && !requested.has(fs.basename(dir))) continue;
     if (!fs.existsSync(dir)) continue;
     for (const name of fs.readdirSync(dir)) {
       if (versionSeg && !name.includes(versionSeg)) continue;

@@ -8,14 +8,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { patchCapabilities } from "../patches/capabilities.js";
 import { PLUGINS } from "../plugins.config.js";
 import { exec } from "../utils/index.js";
 
 const previousEnv = process.env.NODE_ENV;
 process.env.NODE_ENV = "production";
-const { patchAppGradleSigning } = await import("../patches/android.js");
-const { run, build, Tauri, TAURI_VERSION } = await import("../index.js");
+const { patchAppGradleSigning, patchBuildTask } = await import("../patches/android.js");
+const { run, build, artifactName, Tauri, TAURI_VERSION } = await import("../index.js");
 if (previousEnv === undefined) delete process.env.NODE_ENV;
 else process.env.NODE_ENV = previousEnv;
 
@@ -52,6 +53,45 @@ function mockKeytool(context) {
 
 test("default plugins do not grant command execution", () => {
   assert.deepEqual(PLUGINS.find(({ id }) => id === "shell").permissions, []);
+});
+
+test("Android Gradle tasks invoke resolved Node and CLI paths once and patch idempotently", async (context) => {
+  const { root } = await fixture(context);
+  const directory = path.join(root, "gen/android/buildSrc/src/main/java/org/example/app/kotlin");
+  await mkdir(directory, { recursive: true });
+  const file = path.join(directory, "BuildTask.kt");
+  const cli = fileURLToPath(import.meta.resolve("@tauri-apps/cli/tauri.js"));
+  const kotlinString = (value) => JSON.stringify(value).replace(/\$/g, "\\$");
+  for (const executable of ["npm", "npx", "tauri"]) {
+    await writeFile(
+      file,
+      `import org.apache.tools.ant.taskdefs.condition.Os
+open class BuildTask {
+  @TaskAction
+  fun assemble() {
+    val executable = """${executable}""";
+    try { runTauriCli(executable) } catch (error: Exception) {
+      val fallbacks = listOf("$executable.exe", "$executable.cmd", "$executable.bat")
+      for (fallback in fallbacks) { runTauriCli(fallback) }
+    }
+  }
+  fun runTauriCli(executable: String) {
+    val args = listOf("run", "--", "tauri", "android", "android-studio-script");
+    project.exec { executable(executable); args(args) }.assertNormalExitValue()
+  }
+}`,
+    );
+    await patchBuildTask(root, { app: { id: "org.example.app" } });
+    const patched = await readFile(file, "utf8");
+    assert.ok(patched.includes(`runTauriCli(${kotlinString(process.execPath)})`));
+    assert.ok(patched.includes(`listOf(${kotlinString(cli)}, "android", "android-studio-script")`));
+    assert.doesNotMatch(patched, /fallback|tauri\.bat|catch\s*\(/);
+    assert.match(patched, /assertNormalExitValue\(\)/);
+    await patchBuildTask(root, { app: { id: "org.example.app" } });
+    assert.equal(await readFile(file, "utf8"), patched);
+  }
+  await writeFile(file, "unrecognized future template");
+  await assert.rejects(patchBuildTask(root, { app: { id: "org.example.app" } }), /Unsupported Android BuildTask template/);
 });
 
 test("spawn errors reject instead of crashing and a late end resolves", async () => {
@@ -226,6 +266,64 @@ test("generated capabilities omit execution grants and validate explicit scopes"
   assert.ok(warning.mock.callCount() > 0);
   const permissions = JSON.parse(await readFile(file, "utf8")).permissions;
   assert.equal(permissions.filter((permission) => permission?.identifier === grant.identifier).length, 1);
+});
+
+test("desktop artifact collection recognizes singular headers and returns each source once", async (context) => {
+  const { root } = await fixture(context);
+  const target = "x86_64-pc-windows-msvc";
+  const release = path.join(root, "target", target, "release");
+  const installer = path.join(release, "bundle/nsis/example_0.0.1_x64-setup.exe");
+  const staleInstaller = path.join(release, "bundle/nsis/example_0.0.0_x64-setup.exe");
+  const stale = path.join(release, "bundle/msi/old_0.0.1_x64.msi");
+  const binary = path.join(release, "example.exe");
+  await mkdir(path.dirname(installer), { recursive: true });
+  await mkdir(path.dirname(stale), { recursive: true });
+  await writeFile(installer, "installer");
+  await writeFile(staleInstaller, "old NSIS installer");
+  await writeFile(stale, "old installer");
+  await writeFile(binary, "binary");
+  let emitOutput = true;
+  mockCommand(context, ({ child }) => {
+    if (!emitOutput) return;
+    child.stdout.write("Finished 1 bun");
+    child.stdout.write(`dle at:\n    ${installer.slice(0, 20)}`);
+    child.stdout.write(`${installer.slice(20)} (8.90 MiB)\n    ${installer} (8.90 MiB)`);
+  });
+  const config = {
+    platform: "desktop",
+    crossCompile: target,
+    buildDir: root,
+    target: "nsis",
+    app: { name: "example", id: "org.example.app" },
+  };
+  const result = await build(config);
+  assert.deepEqual(result.paths, [installer, binary]);
+  await rm(staleInstaller);
+  emitOutput = false;
+  assert.deepEqual((await build({ ...config, target: "exe" })).paths, [installer, binary]);
+  assert.deepEqual((await build({ ...config, extraTauriConfig: { bundle: { active: false } } })).paths, [binary]);
+});
+
+test("Windows installer and application destinations are distinct with or without a name override", () => {
+  const sources = [
+    "C:/app/target/release/bundle/msi/example_0.0.1_x64_en-US.msi",
+    "C:/app/target/release/bundle/nsis/example_0.0.1_x64-setup.exe",
+    "C:/app/target/release/example.exe",
+  ];
+  const options = { appName: "Example", version: "0.0.1", type: "release" };
+  assert.deepEqual(
+    sources.map((sourcePath) => artifactName({ ...options, name: "vistta-connect", sourcePath })),
+    ["vistta-connect.msi", "vistta-connect-setup.exe", "vistta-connect-release.exe"],
+  );
+  assert.deepEqual(
+    sources.map((sourcePath) => artifactName({ ...options, sourcePath })),
+    ["example-0.0.1.msi", "example-0.0.1-setup.exe", "example-0.0.1-release.exe"],
+  );
+  assert.equal(
+    artifactName({ ...options, name: "example", sourcePath: sources[1].replaceAll("/", "\\") }),
+    "example-setup.exe",
+  );
+  assert.equal(artifactName({ ...options, name: "example", sourcePath: "app.apk" }), "example-release.apk");
 });
 
 test("process arguments with spaces and shell metacharacters stay literal", async () => {

@@ -161,7 +161,7 @@ to your frontend, especially if it renders external content.
 `run` and `build` return different shapes:
 
 - `run` returns a handle of `{ close, on, end }`. Keep it and call `handle.close()` to stop the launched app; `await handle.end()` waits for exit. Android monitors the app process, not only its foreground activity.
-- `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, installers + native binary for desktop). The runtime parses tauri output for `Finished ... at:` markers (both single-line `Finished 1 artifact at: <path>` and multi-line `Finished N bundles at:` followed by indented paths) and falls back to well-known default paths when no markers are emitted. The promise rejects with an `Error` on non-zero exit.
+- `build` returns `{ type, paths }` where `type` is the build variant that was produced (`"release"` or `"debug"`) and `paths` is a list of absolute paths to the produced artifacts (APK/AAB for android, `.app`/`.ipa` for ios, installers + native binary for desktop). The runtime parses Tauri output for `Finished ... at:` markers, including singular `Finished 1 bundle at:` headers, and handles lines split across output chunks. Desktop paths are deduplicated; fallback discovery only includes requested bundle formats (`exe` means NSIS) and skips installers when bundling is disabled. The promise rejects with an `Error` on non-zero exit.
 
 The CLI consumer (`@vistta/js`) takes the `paths` and copies each artifact to the build output directory using a versioned name derived from `artifactName()`:
 
@@ -171,24 +171,28 @@ import { build, artifactName } from "@vistta/js-native";
 const { type, paths } = await build({ platform: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
 for (const sourcePath of paths) {
   const name = artifactName({ appName: "My App", version: "1.0.0", type, sourcePath });
-  // → "My-App-1.0.0.apk" / "My-App-1.0.0.aab" (android)
-  // → "My-App-1.0.0_en-US.msi" / "My-App-1.0.0-setup.exe" (desktop installers)
-  // → "My-App-1.0.0-release.exe" (desktop raw binary)
-  // → "My-App-1.0.0.app" / ".ipa" (ios)
+  // → "my-app-1.0.0-release.apk" / "my-app-1.0.0.aab" (android)
+  // → "my-app-1.0.0.msi" / "my-app-1.0.0-setup.exe" (desktop installers)
+  // → "my-app-1.0.0-release.exe" (Windows raw binary)
+  // → "my-app-1.0.0.app" / ".ipa" (ios)
 }
 ```
 
-#### `artifactName({ appName, version, type, sourcePath })`
+#### `artifactName({ appName, name, version, type, sourcePath })`
 
 Derives a versioned destination filename for an artifact produced by `build()`. The naming convention is:
 
 - Android APK: `<App-Name>-<version>-<type>.apk`
 - Android AAB: `<App-Name>-<version>.aab`
-- Desktop installer (msi/nsis/deb/rpm/AppImage/dmg): `<App-Name>-<version><...suffix><.ext>` (Tauri's own filename is preserved; the type segment is not added)
-- Desktop raw binary: `<App-Name>-<version>-<type><.exe?>` (where the type segment is `-release` or `-debug`)
+- NSIS installer: `<App-Name>-<version>-setup.exe`, distinct from the raw application executable
+- Other desktop installers (msi/deb/rpm/AppImage/dmg): `<App-Name>-<version><.ext>`
+- Windows raw binary: `<App-Name>-<version>-<type>.exe` (where the type segment is `-release` or `-debug`)
+- Other desktop raw binaries: `<App-Name>-<version>`
 - iOS `.app`/`.ipa`: `<App-Name>-<version><.ext>`
 
 Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName` and `version` are collapsed to a single `-` so the filename is safe on Windows, macOS, and Linux.
+
+Derived names are lowercased. An explicit `name` (the CLI's `--name`) replaces the app-name/version prefix and preserves its casing. For example, `--name=vistta-connect --target=exe` produces `vistta-connect-setup.exe` and `vistta-connect-release.exe`, not two files competing for the same destination.
 
 ## Cross-compilation
 
@@ -535,9 +539,11 @@ background scheduler (see [Scheduler](#scheduler) below).
   forward `org.vistta.runtime.LAUNCH_SHORTCUT` intents to `VisttaShortcuts`
   so they reach the webview as `launch-action` events (see
   [Accessibility](#accessibility)).
-- `patchBuildTask` — rewrites Tauri 2.12.1's `BuildTask.kt` to call the
-  `tauri` CLI directly instead of going through `npm run -- tauri ...`, so
-  the consumer's `package.json` doesn't need a `tauri` script
+- `patchBuildTask` — rewrites Tauri 2.12.1's `BuildTask.kt` to invoke the
+  absolute Node executable with the resolved Tauri CLI JavaScript entry point.
+  No `tauri` npm script or PATH-resolved `.cmd`/`.bat` wrapper is required.
+  The task invokes the CLI once: Cargo failures propagate instead of being
+  masked by retries ending in a misleading `tauri.bat` launch error.
 - `patchCargoToml` / `patchLibRs` / `patchMainRs` — full file writes, no
   marker comments
 - `version` — read from the consumer's `package.json` and written to both
