@@ -313,17 +313,46 @@ test("Windows installer and application destinations are distinct with or withou
   const options = { appName: "Example", version: "0.0.1", type: "release" };
   assert.deepEqual(
     sources.map((sourcePath) => artifactName({ ...options, name: "vistta-connect", sourcePath })),
-    ["vistta-connect.msi", "vistta-connect-setup.exe", "vistta-connect-release.exe"],
+    ["vistta-connect.msi", "vistta-connect-setup.exe", "vistta-connect.exe"],
   );
   assert.deepEqual(
     sources.map((sourcePath) => artifactName({ ...options, sourcePath })),
-    ["example-0.0.1.msi", "example-0.0.1-setup.exe", "example-0.0.1-release.exe"],
+    ["example-0.0.1.msi", "example-0.0.1-setup.exe", "example-0.0.1.exe"],
   );
   assert.equal(
     artifactName({ ...options, name: "example", sourcePath: sources[1].replaceAll("/", "\\") }),
     "example-setup.exe",
   );
-  assert.equal(artifactName({ ...options, name: "example", sourcePath: "app.apk" }), "example-release.apk");
+  assert.equal(
+    artifactName({ ...options, name: "example", sourcePath: sources[2].replaceAll("/", "\\") }),
+    "example.exe",
+  );
+  assert.deepEqual(
+    sources.map((sourcePath) => artifactName({ ...options, type: "debug", name: "example", sourcePath })),
+    ["example.msi", "example-setup.exe", "example-debug.exe"],
+  );
+  assert.equal(
+    artifactName({ ...options, type: "debug", sourcePath: sources[2] }),
+    "example-0.0.1-debug.exe",
+  );
+});
+
+test("Android artifact names omit release suffixes and retain debug APK suffixes", () => {
+  const options = { appName: "Example", version: "0.0.1" };
+  for (const [type, suffix] of [["release", ""], ["debug", "-debug"]]) {
+    assert.equal(
+      artifactName({ ...options, type, name: "vistta-code-hub-client", sourcePath: "app.apk" }),
+      `vistta-code-hub-client${suffix}.apk`,
+    );
+    assert.equal(
+      artifactName({ ...options, type, sourcePath: "app.apk" }),
+      `example-0.0.1${suffix}.apk`,
+    );
+    assert.equal(
+      artifactName({ ...options, type, name: "vistta-code-hub-client", sourcePath: "app.aab" }),
+      "vistta-code-hub-client.aab",
+    );
+  }
 });
 
 test("process arguments with spaces and shell metacharacters stay literal", async () => {

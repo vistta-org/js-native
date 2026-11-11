@@ -60,6 +60,8 @@ export async function mergeConfig(targetDir, config) {
     },
     bundle: {
       active: true,
+      // Tauri otherwise derives it from the identifier ("vistta").
+      publisher: config?.app?.publisher ?? "Vistta",
       targets: resolveBundleTargets(config),
       icon:
         config?.platform === "ios"

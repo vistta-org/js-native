@@ -35,3 +35,9 @@
 
 # --- JSON (org.json is excluded from socket.io-client, but keep anyway) ---
 -keep class org.json.** { *; }
+
+# --- ML Kit (barcode-scanner plugin): minified release builds crashed on the first camera frame ---
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.internal.mlkit_vision_**

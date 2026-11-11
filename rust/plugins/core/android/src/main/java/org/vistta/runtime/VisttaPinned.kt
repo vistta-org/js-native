@@ -21,9 +21,15 @@ package org.vistta.runtime
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
+import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
 import java.security.KeyStore
@@ -120,7 +126,27 @@ object VisttaPinned {
 
     // --- bridge -------------------------------------------------------------
 
-    fun fetchCertificate(id: String, url: String) {
+    private const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+
+    /** Android 17+ drops LAN connections until the user allows local network access. */
+    private fun withLocalNetwork(id: String, task: () -> Unit) {
+        val activity = activityRef?.get()
+        if (Build.VERSION.SDK_INT < 37 || activity == null ||
+            ContextCompat.checkSelfPermission(activity, LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+        ) return task()
+        val registry = (activity as? ComponentActivity)?.activityResultRegistry ?: return task()
+        mainHandler.post {
+            var launcher: ActivityResultLauncher<String>? = null
+            launcher = registry.register("vistta-local-network-$id", ActivityResultContracts.RequestPermission()) { granted ->
+                launcher?.unregister()
+                if (granted) task()
+                else dispatchError(id, IllegalStateException("Local network access was denied. Allow Nearby devices for this app in Android settings to reach computers on your network."))
+            }
+            launcher.launch(LOCAL_NETWORK)
+        }
+    }
+
+    fun fetchCertificate(id: String, url: String) = withLocalNetwork(id) {
         executor.execute {
             try {
                 val request = Request.Builder().url(url).get().build()
@@ -137,7 +163,7 @@ object VisttaPinned {
         }
     }
 
-    fun request(id: String, url: String, method: String, headersJson: String, body: String?, caPem: String) {
+    fun request(id: String, url: String, method: String, headersJson: String, body: String?, caPem: String) = withLocalNetwork(id) {
         executor.execute {
             try {
                 val upper = method.uppercase()

@@ -277,8 +277,9 @@ export async function build(config) {
 /**
  * Derives a versioned destination filename for an artifact produced by
  * `build()`. Naming convention: `<appName>-<version>[-<type>]<.ext>`. The
- * type segment (release|debug) is included for Android APKs and desktop
- * binaries; AABs and iOS `.ipa`/`.app` bundles omit it (single-variant per
+ * type segment is included only for debug Android APKs and Windows
+ * binaries, and NSIS installers use
+ * `-setup`. AABs and iOS `.ipa`/`.app` bundles omit it (single-variant per
  * build). The name is sanitised for filesystem safety (spaces preserved,
  * path separators and reserved characters stripped).
  *
@@ -298,7 +299,7 @@ export function artifactName({ appName, name, version, type, sourcePath }) {
       .replace(/^-+|-+$/g, "")
       .trim();
   const installer = /^\.exe$/i.test(ext) && /[\\/]bundle[\\/]nsis[\\/]/i.test(sourcePath);
-  const includeType = /^\.(apk|exe)$/i.test(ext);
+  const includeType = /^\.(apk|exe)$/i.test(ext) && type === "debug";
   const typeSeg = installer ? "-setup" : includeType ? `-${type}` : "";
   const dev = DEV ? ".dev" : "";
   if (name) {

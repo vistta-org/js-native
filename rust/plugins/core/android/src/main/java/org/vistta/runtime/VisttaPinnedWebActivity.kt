@@ -9,6 +9,7 @@ package org.vistta.runtime
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.net.http.SslCertificate
 import android.net.http.SslError
@@ -20,6 +21,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import androidx.core.view.WindowInsetsCompat
 import java.io.ByteArrayInputStream
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -77,7 +80,17 @@ class VisttaPinnedWebActivity : Activity() {
                 return true
             }
         }
-        setContentView(view)
+        setContentView(FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(view)
+            // Edge-to-edge is forced from SDK 35: keep the page clear of the system bars and keyboard.
+            setOnApplyWindowInsetsListener { container, insets ->
+                val bars = WindowInsetsCompat.toWindowInsetsCompat(insets, container)
+                    .getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
+                container.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                insets
+            }
+        })
         webView = view
         if (savedInstanceState == null || view.restoreState(savedInstanceState) == null) view.loadUrl(url)
     }

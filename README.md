@@ -63,6 +63,7 @@ await Tauri.run({
   app: {
     id: "com.example.app",
     name: "My App",
+    publisher: "Example", // installer/Apps list publisher; default "Vistta"
     width: 1280,
     height: 800,
     minWidth: 320,
@@ -171,9 +172,9 @@ import { build, artifactName } from "@vistta/js-native";
 const { type, paths } = await build({ platform: "android", buildDir: "./build", app: { name: "My App", version: "1.0.0" } });
 for (const sourcePath of paths) {
   const name = artifactName({ appName: "My App", version: "1.0.0", type, sourcePath });
-  // → "my-app-1.0.0-release.apk" / "my-app-1.0.0.aab" (android)
+  // → "my-app-1.0.0.apk" / "my-app-1.0.0.aab" (android release)
   // → "my-app-1.0.0.msi" / "my-app-1.0.0-setup.exe" (desktop installers)
-  // → "my-app-1.0.0-release.exe" (Windows raw binary)
+  // → "my-app-1.0.0.exe" (Windows release binary)
   // → "my-app-1.0.0.app" / ".ipa" (ios)
 }
 ```
@@ -182,17 +183,17 @@ for (const sourcePath of paths) {
 
 Derives a versioned destination filename for an artifact produced by `build()`. The naming convention is:
 
-- Android APK: `<App-Name>-<version>-<type>.apk`
+- Android APK: `<App-Name>-<version>.apk` for release builds, `<App-Name>-<version>-debug.apk` for debug builds
 - Android AAB: `<App-Name>-<version>.aab`
 - NSIS installer: `<App-Name>-<version>-setup.exe`, distinct from the raw application executable
 - Other desktop installers (msi/deb/rpm/AppImage/dmg): `<App-Name>-<version><.ext>`
-- Windows raw binary: `<App-Name>-<version>-<type>.exe` (where the type segment is `-release` or `-debug`)
+- Windows raw binary: `<App-Name>-<version>.exe` for release builds, `<App-Name>-<version>-debug.exe` for debug builds
 - Other desktop raw binaries: `<App-Name>-<version>`
 - iOS `.app`/`.ipa`: `<App-Name>-<version><.ext>`
 
 Whitespace and reserved filesystem characters (`/ \ : * ? " < > |`) in `appName` and `version` are collapsed to a single `-` so the filename is safe on Windows, macOS, and Linux.
 
-Derived names are lowercased. An explicit `name` (the CLI's `--name`) replaces the app-name/version prefix and preserves its casing. For example, `--name=vistta-connect --target=exe` produces `vistta-connect-setup.exe` and `vistta-connect-release.exe`, not two files competing for the same destination.
+Derived names are lowercased. An explicit `name` (the CLI's `--name`) replaces the app-name/version prefix and preserves its casing. For example, `--name=vistta-connect --target=exe` produces `vistta-connect-setup.exe` and `vistta-connect.exe`, not two files competing for the same destination. Existing output files are not removed automatically, so older `-release.exe` or `-release.apk` files can remain after rebuilding.
 
 ## Cross-compilation
 
