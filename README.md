@@ -2,6 +2,8 @@
 
 Native runtime for building Android and desktop applications using **Tauri v2**.
 
+> **Production readiness:** This package has not yet been tested in production. Validate it for your use case before deploying.
+
 ## Features
 
 - **Single codebase** for Android, macOS, Windows, and Linux. iOS build support is experimental and `run()` does not support iOS. Browser plugin fallbacks are not a Web build target.
@@ -277,8 +279,13 @@ vistta build [folder] app --target android=apk,windows=nsis
 
 ## Run on startup (Windows/Linux) — plan
 
-**Status: planned, not implemented.** Adds an opt-in "launch at login" option
-for desktop apps. Scope is decided; implementation follows the outline below.
+**Status: partially implemented.** The desktop runtime registers the official
+autostart plugin and exposes `System.enableAutostart()`,
+`System.disableAutostart()` and `System.isAutostartEnabled()`. Code Hub offers
+the opt-in setting on Windows/Linux and reads its state from the OS.
+Registration is off by default; enabling it launches the app normally at login.
+The outline below remains the follow-up plan for Connect integration,
+Windows/Linux-only native registration, and hidden `--autostart` launches.
 
 ### Decisions
 
@@ -583,7 +590,11 @@ background scheduler (see [Scheduler](#scheduler) below).
   icon + hide-on-close). The `tray-icon` Cargo feature is conditionally added.
   The tray menu is dynamic: JS publishes quick-actions via `Accessibility.setShortcuts`
   (see [Accessibility](#accessibility)) and clicks emit `launch-action` events back to
-  the webview. Has no effect on Android/iOS.
+  the webview. The built-in Show/Hide item tracks and toggles the local window
+  (`main`, or `ide` for hidden controllers). If no window exists, it emits a
+  `launch-action` with id `show` so the controller can create it. Dynamic
+  shortcuts do not automatically surface the IDE for hidden controllers.
+  Has no effect on Android/iOS.
 - Desktop apps run as a single instance (`tauri-plugin-single-instance`): a second
   launch shows the existing window (`main`, or `ide` when `app.visible: false`) and
   exits. Set `app.multipleInstances: true` to allow several instances.
@@ -798,6 +809,9 @@ one flat namespace (the two modules have no overlapping export names):
 
 - App info — `getVersion`, `getName`, `getTauriVersion`, `getIdentifier`, etc.
 - Path helpers — `downloadDir`, `appDataDir`, `join`, `resolve`, `sep`, etc.
+- Desktop login startup — `enableAutostart`, `disableAutostart`,
+  `isAutostartEnabled` (official autostart plugin; `autostart:default`
+  permissions). Registration is per OS user and is never enabled implicitly.
 
 ```javascript
 import { System } from "@vistta/js-native/plugins";

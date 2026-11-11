@@ -39,6 +39,14 @@ export const PLUGINS = [
   PRIVILEGED_CLIPBOARD_PLUGIN,
   DIRECTORY_SYNC_PLUGIN,
   {
+    id: "autostart",
+    crate: "tauri-plugin-autostart",
+    version: "2",
+    platforms: ["desktop"],
+    initFn: "tauri_plugin_autostart::Builder::new().build()",
+    permissions: [],
+  },
+  {
     id: "audio-recorder",
     crate: "tauri-plugin-audio-recorder",
     version: "0.1",

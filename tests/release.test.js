@@ -10,6 +10,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { patchCapabilities } from "../patches/capabilities.js";
+import { patchCargoToml, patchLibRs } from "../patches/rust.js";
 import { PLUGINS } from "../plugins.config.js";
 import { exec } from "../utils/index.js";
 
@@ -53,6 +54,32 @@ function mockKeytool(context) {
 
 test("default plugins do not grant command execution", () => {
   assert.deepEqual(PLUGINS.find(({ id }) => id === "shell").permissions, []);
+});
+
+test("background tray toggles its window and hidden controllers do not surface it for shortcut actions", async (context) => {
+  const { root } = await fixture(context);
+  const config = { platform: "desktop", app: { name: "Example", background: true, visible: false } };
+  await writeFile(path.join(root, "Cargo.toml"), "");
+  await mkdir(path.join(root, "capabilities"));
+  await writeFile(path.join(root, "capabilities/default.json"), "{}");
+  await patchLibRs(root, config);
+  await patchCargoToml(root, config);
+  await patchCapabilities(root, config);
+  const rust = await readFile(path.join(root, "src/lib.rs"), "utf8");
+  assert.match(rust, /window\.is_visible\(\)\.and_then/);
+  assert.match(rust, /if visible \{\s+window\.hide\(\)/);
+  assert.match(rust, /set_text\(if visible \{ "Hide" \} else \{ "Show" \}\)/);
+  assert.match(rust, /window\.label\(\) == "ide"/);
+  assert.match(rust, /"id": "show"/);
+  const dynamicHandler = rust.slice(rust.indexOf("id =>"), rust.indexOf("// Rebuild the tray"));
+  assert.doesNotMatch(dynamicHandler, /window\.show/);
+  assert.match(rust, /tauri_plugin_autostart::Builder::new\(\)\.build\(\)/);
+  assert.match(await readFile(path.join(root, "Cargo.toml"), "utf8"), /tauri-plugin-autostart = \{ version = "2" \}/);
+  const permissions = JSON.parse(await readFile(path.join(root, "capabilities/default.json"), "utf8")).permissions;
+  assert.ok(permissions.includes("autostart:default"));
+  await patchCapabilities(root, { platform: "android" });
+  const android = JSON.parse(await readFile(path.join(root, "capabilities/default.json"), "utf8")).permissions;
+  assert.ok(!android.includes("autostart:default"));
 });
 
 test("Android Gradle tasks invoke resolved Node and CLI paths once and patch idempotently", async (context) => {

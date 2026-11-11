@@ -118,7 +118,7 @@ function dispatch(id, payload) {
  *
  * Safe to call repeatedly; the native menu / shortcut list is rebuilt from
  * `shortcuts` each time. Passing an empty array clears all dynamic entries
- * (the tray's built-in Show/Quit items remain on desktop).
+ * (the tray's built-in Show/Hide and Quit items remain on desktop).
  *
  * No-op on iOS and browser builds.
  *

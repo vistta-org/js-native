@@ -71,7 +71,7 @@ export async function patchLibRs(targetDir, config) {
   // `set-shortcuts` Tauri event (see plugins/shortcuts.js), and a listener
   // rebuilds the menu from the payload. Menu clicks for action ids emit a
   // `launch-action` event back to the webview so the JS `onLaunchAction`
-  // handler receives `{ id, payload }`. The built-in `Show` and `Quit`
+  // handler receives `{ id, payload }`. The built-in `Show/Hide` and `Quit`
   // items are always present.
   const background = !!config?.app?.background;
   const trayWindow = config?.app?.visible === false ? "ide" : "main";
@@ -80,6 +80,9 @@ export async function patchLibRs(targetDir, config) {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
+            }
+            if window.label() == "${trayWindow}" {
+                sync_tray_window(window.app_handle());
             }
         })
         .setup(|app| {
@@ -93,6 +96,7 @@ export async function patchLibRs(targetDir, config) {
             app.manage(Mutex::new(Vec::<(String, String)>::new()));
 
             let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            app.manage(show_i.clone());
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
@@ -104,8 +108,21 @@ export async function patchLibRs(targetDir, config) {
                         "quit" => { app.exit(0); }
                         "show" => {
                             if let Some(window) = app.get_webview_window("${trayWindow}") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                                let result = window.is_visible().and_then(|visible| {
+                                    if visible {
+                                        window.hide()
+                                    } else {
+                                        window.show()?;
+                                        window.unminimize()?;
+                                        window.set_focus()
+                                    }
+                                });
+                                if let Err(error) = result {
+                                    log::error!("Could not toggle tray window: {error}");
+                                }
+                                sync_tray_window(app);
+                            } else if let Err(error) = app.emit("launch-action", serde_json::json!({ "id": "show" })) {
+                                log::error!("Could not open tray window: {error}");
                             }
                         }
                         id => {
@@ -120,10 +137,10 @@ export async function patchLibRs(targetDir, config) {
                                 "id": id,
                                 "payload": payload,
                             }));
-                            if let Some(window) = app.get_webview_window("${trayWindow}") {
+                            ${config?.app?.visible === false ? "" : `if let Some(window) = app.get_webview_window("${trayWindow}") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
-                            }
+                            }`}
                         }
                     }
                 })
@@ -143,16 +160,14 @@ export async function patchLibRs(targetDir, config) {
                         table.extend(entries.iter().map(|e| (e.id.clone(), e.payload.clone())));
                     }
                 }
-                let show_i = match MenuItem::with_id(&handle, "show", "Show", true, None::<&str>) {
-                    Ok(i) => i, Err(_) => return,
-                };
+                let show_i = handle.state::<MenuItem<tauri::Wry>>();
                 let quit_i = match MenuItem::with_id(&handle, "quit", "Quit", true, None::<&str>) {
                     Ok(i) => i, Err(_) => return,
                 };
                 let menu = match Menu::new(&handle) {
                     Ok(m) => m, Err(_) => return,
                 };
-                let _ = menu.append(&show_i);
+                let _ = menu.append(show_i.inner());
                 if !entries.is_empty() {
                     if let Ok(sep) = PredefinedMenuItem::separator(&handle) {
                         let _ = menu.append(&sep);
@@ -168,8 +183,10 @@ export async function patchLibRs(targetDir, config) {
                 }
                 let _ = menu.append(&quit_i);
                 let _ = tray.set_menu(Some(menu));
+                sync_tray_window(&handle);
             });
 
+            sync_tray_window(app.handle());
             Ok(())
         })`
     : desktopChain;
@@ -225,7 +242,38 @@ ${singleInstanceBlock}${sharedChain ? `\n    let builder = builder\n${indent(sha
 }
 ${
   background
-    ? `\n#[cfg(not(any(target_os = "android", target_os = "ios")))]\n#[derive(serde::Deserialize)]\nstruct ShortcutEntry {\n    id: String,\n    label: String,\n    #[serde(default)]\n    icon: Option<String>,\n    #[serde(default)]\n    payload: String,\n}\n`
+    ? `
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn sync_tray_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let visible = match app.get_webview_window("${trayWindow}") {
+        Some(window) => match window.is_visible() {
+            Ok(visible) => visible,
+            Err(error) => {
+                log::error!("Could not read tray window visibility: {error}");
+                return;
+            }
+        },
+        None => false,
+    };
+    if let Some(item) = app.try_state::<tauri::menu::MenuItem<tauri::Wry>>() {
+        if let Err(error) = item.set_text(if visible { "Hide" } else { "Show" }) {
+            log::error!("Could not update tray window action: {error}");
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(serde::Deserialize)]
+struct ShortcutEntry {
+    id: String,
+    label: String,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    payload: String,
+}
+`
     : ""
 }`;
   await writeIfChanged(libPath, content);
