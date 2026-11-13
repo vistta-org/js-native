@@ -57,7 +57,7 @@
     "tauri-plugin-audio-recorder-api": "^0.1.2"
   },
   "peerDependencies": {
-    "@vistta/js": ">=0.0.1",
+    "@vistta/js": "latest",
     "sharp": "^0.35.5",
     "socket.io-client": "^4.8.4"
   },
