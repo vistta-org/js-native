@@ -1,6 +1,6 @@
 {
   "name": "@vistta/js-native",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Vistta.js native app runtime for Android and desktop platforms using Tauri",
   "main": "index.js",
   "exports": {
@@ -57,7 +57,7 @@
     "tauri-plugin-audio-recorder-api": "^0.1.2"
   },
   "peerDependencies": {
-    "@vistta/js": "latest",
+    "@vistta/js": ">=0.0.1",
     "sharp": "^0.35.5",
     "socket.io-client": "^4.8.4"
   },
