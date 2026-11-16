@@ -1,5 +1,5 @@
-export * as Dialog from "@tauri-apps/plugin-dialog";
 export * as BarcodeScanner from "@tauri-apps/plugin-barcode-scanner";
+export * as Dialog from "@tauri-apps/plugin-dialog";
 export * as Haptics from "@tauri-apps/plugin-haptics";
 export * as Notification from "@tauri-apps/plugin-notification";
 export * as Accessibility from "./accessibility.js";

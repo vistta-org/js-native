@@ -137,10 +137,14 @@ export async function patchLibRs(targetDir, config) {
                                 "id": id,
                                 "payload": payload,
                             }));
-                            ${config?.app?.visible === false ? "" : `if let Some(window) = app.get_webview_window("${trayWindow}") {
+                            ${
+                              config?.app?.visible === false
+                                ? ""
+                                : `if let Some(window) = app.get_webview_window("${trayWindow}") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
-                            }`}
+                            }`
+                            }
                         }
                     }
                 })
@@ -208,9 +212,10 @@ ${indent(mobileChain, 8)};
     : "";
 
   const singleInstance = !config?.app?.multipleInstances;
-  const managerUse = background || singleInstance
-    ? '    #[cfg(not(any(target_os = "android", target_os = "ios")))]\n    use tauri::Manager;\n'
-    : "";
+  const managerUse =
+    background || singleInstance
+      ? '    #[cfg(not(any(target_os = "android", target_os = "ios")))]\n    use tauri::Manager;\n'
+      : "";
 
   // Unless `app.multipleInstances` is set, a second launch surfaces the
   // existing window and exits instead of starting another process. The

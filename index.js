@@ -34,8 +34,8 @@ const DEV = process.env.NODE_ENV === "development";
  * @typedef {Object} Config
  * @property {"desktop"|"android"|"ios"|"linux"|"windows"|"macos"} platform - Target platform. "linux"/"windows"/"macos" map to "desktop" (with "windows"/"macos" auto-setting crossCompile); at the runtime level only "desktop"/"android"/"ios" are used internally.
  * @property {string} buildDir - Build output directory (the src-tauri root for this app).
- * @property {Object} app - App settings.
- * @property {string} app.id - App identifier (e.g., "com.example.app").
+ * @property {Object} [app] - App settings.
+ * @property {string} [app.id] - App identifier (defaults to "org.vistta.app").
  * @property {string} [app.name] - App display name.
  * @property {number} [app.width] - Window width.
  * @property {number} [app.height] - Window height.

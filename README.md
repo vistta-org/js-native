@@ -58,6 +58,8 @@ configuration and `NODE_ENV`:
 
 `run()` does not generate configuration, start a dev server, or invoke `tauri dev` / `tauri android dev`. Set `NODE_ENV` before starting the Node process; build mode is selected when the runtime is imported.
 
+The `app` settings are optional. When `app.id` is omitted, the identifier defaults to `org.vistta.app`.
+
 ```javascript
 await Tauri.run({
   platform: "desktop",

@@ -13,6 +13,7 @@ import { patchCapabilities } from "../patches/capabilities.js";
 import { patchCargoToml, patchLibRs } from "../patches/rust.js";
 import { PLUGINS } from "../plugins.config.js";
 import { exec } from "../utils/index.js";
+import { writeIfChanged } from "../utils/write-if-changed.js";
 
 const previousEnv = process.env.NODE_ENV;
 process.env.NODE_ENV = "production";
@@ -54,6 +55,18 @@ function mockKeytool(context) {
 
 test("default plugins do not grant command execution", () => {
   assert.deepEqual(PLUGINS.find(({ id }) => id === "shell").permissions, []);
+});
+
+test("unchanged string and buffer contents do not rewrite a file", async (context) => {
+  const { root } = await fixture(context);
+  const file = path.join(root, "unchanged.txt");
+  assert.equal(await writeIfChanged(file, "original"), true);
+  const before = (await stat(file)).mtimeMs;
+  assert.equal(await writeIfChanged(file, "original"), false);
+  assert.equal(await writeIfChanged(file, Buffer.from("original")), false);
+  assert.equal((await stat(file)).mtimeMs, before);
+  assert.equal(await writeIfChanged(file, Buffer.from("updated")), true);
+  assert.equal(await readFile(file, "utf8"), "updated");
 });
 
 test("background tray toggles its window and hidden controllers do not surface it for shortcut actions", async (context) => {
@@ -181,15 +194,20 @@ test("existing signing identities are never silently regenerated", async (contex
   await assert.rejects(patchAppGradleSigning(missingKey.root, {}), /matching keystore is missing/);
 });
 
+/**
+ * @param {import("node:test").TestContext} context
+ * @param {(call: { command: string, args: string[], options: import("node:child_process").SpawnOptions, child: EventEmitter & { stdout: PassThrough, stderr: PassThrough, kill: () => void } }) => void} [handler]
+ */
 function mockCommand(context, handler = () => {}) {
   const calls = [];
   context.mock.method(childProcess, "spawn", (command, args, options) => {
-    const child = new EventEmitter();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    child.kill = () => {
-      child.emit("close", 0);
-    };
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: () => {
+        child.emit("close", 0);
+      },
+    });
     const call = { command, args, options, child };
     calls.push(call);
     queueMicrotask(() => {
@@ -316,6 +334,7 @@ test("desktop artifact collection recognizes singular headers and returns each s
     child.stdout.write(`dle at:\n    ${installer.slice(0, 20)}`);
     child.stdout.write(`${installer.slice(20)} (8.90 MiB)\n    ${installer} (8.90 MiB)`);
   });
+  /** @type {import("../index.js").Config} */
   const config = {
     platform: "desktop",
     crossCompile: target,
@@ -337,7 +356,7 @@ test("Windows installer and application destinations are distinct with or withou
     "C:/app/target/release/bundle/nsis/example_0.0.1_x64-setup.exe",
     "C:/app/target/release/example.exe",
   ];
-  const options = { appName: "Example", version: "0.0.1", type: "release" };
+  const options = { appName: "Example", version: "0.0.1", type: /** @type {const} */ ("release") };
   assert.deepEqual(
     sources.map((sourcePath) => artifactName({ ...options, name: "vistta-connect", sourcePath })),
     ["vistta-connect.msi", "vistta-connect-setup.exe", "vistta-connect.exe"],
@@ -350,31 +369,25 @@ test("Windows installer and application destinations are distinct with or withou
     artifactName({ ...options, name: "example", sourcePath: sources[1].replaceAll("/", "\\") }),
     "example-setup.exe",
   );
-  assert.equal(
-    artifactName({ ...options, name: "example", sourcePath: sources[2].replaceAll("/", "\\") }),
-    "example.exe",
-  );
+  assert.equal(artifactName({ ...options, name: "example", sourcePath: sources[2].replaceAll("/", "\\") }), "example.exe");
   assert.deepEqual(
     sources.map((sourcePath) => artifactName({ ...options, type: "debug", name: "example", sourcePath })),
     ["example.msi", "example-setup.exe", "example-debug.exe"],
   );
-  assert.equal(
-    artifactName({ ...options, type: "debug", sourcePath: sources[2] }),
-    "example-0.0.1-debug.exe",
-  );
+  assert.equal(artifactName({ ...options, type: "debug", sourcePath: sources[2] }), "example-0.0.1-debug.exe");
 });
 
 test("Android artifact names omit release suffixes and retain debug APK suffixes", () => {
   const options = { appName: "Example", version: "0.0.1" };
-  for (const [type, suffix] of [["release", ""], ["debug", "-debug"]]) {
+  for (const [type, suffix] of /** @type {const} */ ([
+    ["release", ""],
+    ["debug", "-debug"],
+  ])) {
     assert.equal(
       artifactName({ ...options, type, name: "vistta-code-hub-client", sourcePath: "app.apk" }),
       `vistta-code-hub-client${suffix}.apk`,
     );
-    assert.equal(
-      artifactName({ ...options, type, sourcePath: "app.apk" }),
-      `example-0.0.1${suffix}.apk`,
-    );
+    assert.equal(artifactName({ ...options, type, sourcePath: "app.apk" }), `example-0.0.1${suffix}.apk`);
     assert.equal(
       artifactName({ ...options, type, name: "vistta-code-hub-client", sourcePath: "app.aab" }),
       "vistta-code-hub-client.aab",
@@ -409,7 +422,9 @@ test("development launches use debug artifacts and the Android dev identifier", 
     if (nodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = nodeEnv;
   });
-  const { run: runDebug } = await import("../index.js?debug-profile");
+  const debugModule = "../index.js?debug-profile";
+  /** @type {typeof import("../index.js")} */
+  const { run: runDebug } = await import(debugModule);
   const { root } = await fixture(context);
   const executable = path.join(root, "target/debug", `example${process.platform === "win32" ? ".exe" : ""}`);
   await mkdir(path.dirname(executable), { recursive: true });

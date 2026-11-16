@@ -11,7 +11,7 @@ export async function writeIfChanged(path, data) {
   try {
     const existing = await fs.readFile(path);
     const next = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    if (existing.equals(next)) return false;
+    if (Buffer.from(existing).equals(next)) return false;
   } catch {
     // missing or unreadable — fall through to write.
   }

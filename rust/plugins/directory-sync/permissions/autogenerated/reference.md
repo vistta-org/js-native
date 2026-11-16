@@ -27,7 +27,6 @@ Allows scoped directory synchronization with recovery.
 <th>Description</th>
 </tr>
 
-
 <tr>
 <td>
 

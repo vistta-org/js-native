@@ -29,6 +29,10 @@ export async function selectSyncDirectory() {
   return { path: root, capabilities: await requireSupportedRoot(root) };
 }
 
+/**
+ * @param {string} root
+ * @param {{ pageSize?: number, generation?: string, signal?: AbortSignal }} [options]
+ */
 export async function* scanSyncDirectory(root, { pageSize = MAX_PAGE_SIZE, generation = crypto.randomUUID(), signal } = {}) {
   requireRoot(root);
   requirePageSize(pageSize);
@@ -53,6 +57,11 @@ export async function* scanSyncDirectory(root, { pageSize = MAX_PAGE_SIZE, gener
   }
 }
 
+/**
+ * @param {string} root
+ * @param {string} relativePath
+ * @param {{ operationId?: string, signal?: AbortSignal }} [options]
+ */
 export async function hashSyncFile(root, relativePath, { operationId = crypto.randomUUID(), signal } = {}) {
   requireRoot(root);
   requireRelativePath(relativePath);
@@ -66,6 +75,13 @@ export async function hashSyncFile(root, relativePath, { operationId = crypto.ra
   }
 }
 
+/**
+ * @typedef {{ size: number, modified: string | null, identity: string | null }} FileFingerprint
+ *
+ * @param {string} root
+ * @param {string} relativePath
+ * @param {{ fingerprint?: FileFingerprint, signal?: AbortSignal }} [options]
+ */
 export async function* readSyncFileChunks(root, relativePath, { fingerprint, signal } = {}) {
   requireRoot(root);
   requireRelativePath(relativePath);
@@ -110,6 +126,11 @@ export async function endDirectorySyncLease(operationId) {
   return command("end_lease", { operationId });
 }
 
+/**
+ * @param {string} root
+ * @param {string} relativePath
+ * @param {{ expected?: FileFingerprint | null }} [options]
+ */
 export async function beginSyncFileWrite(root, relativePath, { expected = null } = {}) {
   requireRoot(root);
   requireRelativePath(relativePath);
@@ -135,6 +156,12 @@ export async function abortSyncFileWrite(id) {
   return result === true || result?.aborted === true;
 }
 
+/**
+ * @param {string} root
+ * @param {string} relativePath
+ * @param {Iterable<Uint8Array> | AsyncIterable<Uint8Array>} chunks
+ * @param {{ expected?: FileFingerprint | null, sha256?: string, signal?: AbortSignal }} [options]
+ */
 export async function replaceSyncFile(root, relativePath, chunks, { expected = null, sha256, signal } = {}) {
   if (!chunks?.[Symbol.asyncIterator] && !chunks?.[Symbol.iterator]) throw new TypeError("File chunks must be iterable");
   const { id } = await beginSyncFileWrite(root, relativePath, { expected });
@@ -162,6 +189,11 @@ export async function cancelDirectorySyncOperation(operationId) {
   return result === true || result?.cancelled === true;
 }
 
+/**
+ * @param {string} root
+ * @param {(change: { source: string, event: unknown, authoritative: boolean }) => void} callback
+ * @param {{ pollInterval?: number, signal?: AbortSignal }} [options]
+ */
 export async function watchSyncDirectory(root, callback, { pollInterval = DEFAULT_POLL_INTERVAL, signal } = {}) {
   requireRoot(root);
   if (typeof callback !== "function") throw new TypeError("A directory change callback is required");
@@ -262,7 +294,7 @@ function throwIfAborted(signal) {
 }
 
 function isMobile() {
-  return typeof window !== "undefined" && window.platform === "mobile";
+  return typeof window !== "undefined" && "platform" in window && window.platform === "mobile";
 }
 
 function decodeBase64(value) {

@@ -10,7 +10,7 @@
 export * from "@tauri-apps/api/app";
 export * from "@tauri-apps/api/path";
 export {
-  enable as enableAutostart,
   disable as disableAutostart,
+  enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";

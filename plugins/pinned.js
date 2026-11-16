@@ -91,9 +91,7 @@ export async function fetchCertificate(origin) {
  */
 export async function request(url, { ca, method = "GET", headers = {}, body } = /** @type {any} */ ({})) {
   if (!ca) throw new Error("request() needs the pinned CA certificate");
-  const result = await call((id, native) =>
-    native.request(id, url, method, JSON.stringify(headers), body ?? null, ca),
-  );
+  const result = await call((id, native) => native.request(id, url, method, JSON.stringify(headers), body ?? null, ca));
   const text = result.body ?? "";
   return {
     ok: !!result.ok,
