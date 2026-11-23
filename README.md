@@ -279,6 +279,33 @@ vistta build [folder] android --target apk,aab
 vistta build [folder] app --target android=apk,windows=nsis
 ```
 
+### Arch Linux packages — plan
+
+**Status: not implemented.** Tauri has no Arch Linux (pacman) bundle target.
+Arch users can use the AppImage until this is done.
+
+Planned approach for a `pacman` desktop target:
+
+- `resolveBundleTargets` removes `pacman` from the targets passed to Tauri and
+  adds `deb`, because Tauri rejects unknown targets.
+- After `tauri build`, js-native reads the `.deb` (`ar` container), takes the
+  file tree from its `data.tar.*`, writes `.PKGINFO` and `.MTREE`, and packs
+  `<name>-<version>-1-x86_64.pkg.tar.zst`. Node 24 provides zstd compression
+  (`zlib.zstdCompressSync`), so `makepkg` and an Arch host are not needed.
+- The artifact collection and naming accept the `.pkg.tar.zst` extension.
+
+Open points:
+
+- Map Debian dependency names to Arch names (for example,
+  `libwebkit2gtk-4.1-0` → `webkit2gtk-4.1`, `libgtk-3-0` → `gtk3`), including
+  libraries that plugins add.
+- Convert prerelease versions to the Arch format, which does not allow
+  hyphens (`0.6.0-beta.1` → `0.6.0beta.1`).
+- Write a small tar writer or add a tar dependency.
+- Confirm whether `pacman -U` requires `.MTREE`.
+- Decide whether `all` includes `pacman` or the target is opt-in.
+- Packages are unsigned; signing needs a GPG key in CI.
+
 ## Run on startup (Windows/Linux) — plan
 
 **Status: partially implemented.** The desktop runtime registers the official
