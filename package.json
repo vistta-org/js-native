@@ -42,8 +42,8 @@
   "author": "Tiago Terenas Almeida",
   "license": "GPL-3.0-only",
   "dependencies": {
-    "@tauri-apps/api": "^2.12.1",
-    "@tauri-apps/cli": "2.12.1",
+    "@tauri-apps/api": "^2.12.5",
+    "@tauri-apps/cli": "2.12.5",
     "@tauri-apps/plugin-autostart": "^2.7.0",
     "@tauri-apps/plugin-barcode-scanner": "^2.5.3",
     "@tauri-apps/plugin-clipboard-manager": "^2.4.1",

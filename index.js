@@ -27,7 +27,7 @@ import {
 
 const TEMPLATE_DIR = fs.resolve(import.meta.dirname, "./rust");
 const TAURI_CLI = fileURLToPath(import.meta.resolve("@tauri-apps/cli/tauri.js"));
-const TAURI_VERSION = "2.12.1";
+const TAURI_VERSION = "2.12.5";
 const DEV = process.env.NODE_ENV === "development";
 
 /**

@@ -289,7 +289,7 @@ test("minimal desktop builds generate every referenced icon and invoke the pinne
   assert.deepEqual(calls[0].args.slice(1), ["build"]);
   assert.match(calls[0].args[0], /tauri\.js$/);
   assert.equal(calls[0].options.shell, false);
-  assert.equal(TAURI_VERSION, "2.12.1");
+  assert.equal(TAURI_VERSION, "2.12.5");
   await assert.rejects(stat(path.join(root, "plugins")), { code: "ENOENT" });
 });
 
