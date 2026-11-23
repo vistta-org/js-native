@@ -1,6 +1,6 @@
 {
   "name": "@vistta/js-native",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Vistta.js native app runtime for Android and desktop platforms using Tauri",
   "main": "index.js",
   "exports": {
