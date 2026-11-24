@@ -229,7 +229,12 @@ class DirectorySyncPlugin(private val activity: Activity) : Plugin(activity) {
                 if (leaseId != null) DirectorySyncService.acquire(activity, leaseId)
                 invoke.resolve(JSObject(operation().toString()))
             } catch (error: Throwable) {
-                invoke.reject(error.message ?: "Directory operation failed")
+                // Android 12+ refuses the dataSync lease while the app has no foreground service.
+                if (error.javaClass.name == "android.app.ForegroundServiceStartNotAllowedException") {
+                    invoke.reject("Background execution is unavailable", "background-unavailable")
+                } else {
+                    invoke.reject(error.message ?: "Directory operation failed")
+                }
             } finally {
                 if (leaseId != null) runCatching { DirectorySyncService.release(activity, leaseId) }
             }
@@ -239,7 +244,7 @@ class DirectorySyncPlugin(private val activity: Activity) : Plugin(activity) {
     private fun probe(treeUri: Uri): JSObject {
         require(treeUri.scheme == "content") { "A Storage Access Framework tree URI is required" }
         val permission = activity.contentResolver.persistedUriPermissions.firstOrNull { it.uri == treeUri }
-            ?: throw IllegalStateException("The persisted directory grant was revoked")
+            ?: throw IllegalStateException("No persisted directory grant exists for this root")
         require(permission.isReadPermission) { "The directory grant is not readable" }
 
         val documentUri = DocumentsContract.buildDocumentUriUsingTree(

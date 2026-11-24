@@ -7,6 +7,15 @@ const MAX_PAGE_SIZE = 256;
 const MAX_CHUNK_SIZE = 1024 * 1024;
 const DEFAULT_POLL_INTERVAL = 30_000;
 
+/**
+ * True when Android refused a directory operation because the app is in the background without a
+ * running foreground service.
+ * @param {unknown} error
+ */
+export function isBackgroundUnavailable(error) {
+  return /** @type {any} */ (error)?.code === "background-unavailable";
+}
+
 export async function probeDirectorySync(root) {
   requireRoot(root);
   if (!isTauri()) return unsupported("native-runtime-required");

@@ -471,16 +471,26 @@ pub fn commit_write(
         .get_mut(&id)
         .ok_or_else(|| "Write operation is unavailable".to_string())?;
     let actual_sha256 = format!("{:x}", write.digest.clone().finalize());
-    if sha256.len() != 64
-        || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || !actual_sha256.eq_ignore_ascii_case(&sha256)
-    {
-        return Err("Staged write hash does not match".into());
+    let prepared = (|| {
+        if sha256.len() != 64
+            || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !actual_sha256.eq_ignore_ascii_case(&sha256)
+        {
+            return Err("Staged write hash does not match".to_string());
+        }
+        assert_target_precondition(&write.target, write.expected.as_ref())?;
+        write.file.flush().map_err(io_error)?;
+        write.file.sync_all().map_err(io_error)?;
+        create_marker(&write.operation_directory, "prepared")
+    })();
+    if let Err(error) = prepared {
+        // Nothing has touched the target yet, so the staged write cannot be reused.
+        if let Some(write) = writes.remove(&id) {
+            drop(writes);
+            let _ = discard_write(write);
+        }
+        return Err(error);
     }
-    assert_target_precondition(&write.target, write.expected.as_ref())?;
-    write.file.flush().map_err(io_error)?;
-    write.file.sync_all().map_err(io_error)?;
-    create_marker(&write.operation_directory, "prepared")?;
     write.recoverable = true;
 
     let backup = write.operation_directory.join("old");
@@ -529,10 +539,14 @@ pub fn abort_write(state: State<'_, DirectorySyncState>, id: String) -> Result<b
     let Some(write) = write else {
         return Ok(false);
     };
+    discard_write(write)?;
+    Ok(true)
+}
+
+fn discard_write(write: PendingWrite) -> Result<(), String> {
     drop(write.file);
     fs::remove_dir_all(write.operation_directory).map_err(io_error)?;
-    sync_directory(&write.root.join(RECOVERY_DIRECTORY))?;
-    Ok(true)
+    sync_directory(&write.root.join(RECOVERY_DIRECTORY))
 }
 
 #[tauri::command]

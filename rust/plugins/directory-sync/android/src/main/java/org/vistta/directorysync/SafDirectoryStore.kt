@@ -2,6 +2,7 @@ package org.vistta.directorysync
 
 import android.content.ContentResolver
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.util.Base64
 import org.json.JSONArray
@@ -228,7 +229,8 @@ internal class SafDirectoryStore(private val resolver: ContentResolver, private 
             expected,
             staged,
             manifest,
-            FileOutputStream(descriptor.fileDescriptor),
+            // Keeps the descriptor reachable; a bare FileOutputStream lets GC close it mid-write (EBADF).
+            ParcelFileDescriptor.AutoCloseOutputStream(descriptor),
         )
         return JSONObject().put("id", id)
     }
@@ -248,15 +250,22 @@ internal class SafDirectoryStore(private val resolver: ContentResolver, private 
     fun commitWrite(id: String, sha256: String): JSONObject {
         val write = writes[id] ?: error("Write operation is unavailable")
         val actualHash = (write.digest.clone() as MessageDigest).digest().joinToString("") { "%02x".format(it) }
-        require(sha256.matches(Regex("^[0-9a-fA-F]{64}$")) && actualHash.equals(sha256, true)) {
-            "Staged write hash does not match"
+        val current = try {
+            require(sha256.matches(Regex("^[0-9a-fA-F]{64}$")) && actualHash.equals(sha256, true)) {
+                "Staged write hash does not match"
+            }
+            val current = queryChildren(write.parent.uri).singleOrNull { it.name == write.targetName }
+            assertTargetPrecondition(current, write.expected)
+            write.output.flush()
+            write.output.fd.sync()
+            write.output.close()
+            createMarker(write.parent, id, "prepared")
+            current
+        } catch (error: Throwable) {
+            // Nothing has touched the target yet, so the staged write cannot be reused.
+            runCatching { abortWrite(id) }
+            throw error
         }
-        val current = queryChildren(write.parent.uri).singleOrNull { it.name == write.targetName }
-        assertTargetPrecondition(current, write.expected)
-        write.output.flush()
-        write.output.fd.sync()
-        write.output.close()
-        createMarker(write.parent, id, "prepared")
         write.recoverable = true
 
         var backupRetained = false
@@ -271,11 +280,24 @@ internal class SafDirectoryStore(private val resolver: ContentResolver, private 
         renameDocument(write.staged, write.targetName)
         createMarker(write.parent, id, "committed")
         writes.remove(id)
+        removeCommittedMarkers(write.parent, id, backupRetained)
         return JSONObject()
             .put("id", id)
             .put("sha256", actualHash)
             .put("size", write.size)
             .put("backupRetained", backupRetained)
+    }
+
+    /**
+     * Drops markers that recovery no longer needs. A replacement keeps its manifest, old copy and
+     * committed marker for the 30-day retention window; a new file keeps nothing.
+     */
+    private fun removeCommittedMarkers(parent: Document, id: String, backupRetained: Boolean) {
+        runCatching {
+            val byName = queryChildren(parent.uri).associateBy { it.name }
+            val names = if (backupRetained) listOf("prepared", "backup") else listOf("prepared", "committed", "json")
+            names.mapNotNull { byName[internalName(id, it)] }.forEach(::deleteDocument)
+        }
     }
 
     fun abortWrite(id: String): Boolean {
@@ -341,6 +363,11 @@ internal class SafDirectoryStore(private val resolver: ContentResolver, private 
                         repaired.put(id)
                     }
                     backupMarker != null -> ambiguous.put(id)
+                    // A new-file commit whose marker cleanup was interrupted.
+                    staged == null && prepared == null && backup == null && target != null -> {
+                        deleteDocument(manifestDocument)
+                        repaired.put(id)
+                    }
                     prepared != null || staged != null -> {
                         listOfNotNull(staged, prepared, manifestDocument).forEach(::deleteDocument)
                         discarded.put(id)
